@@ -16,6 +16,7 @@
 
 #include <sys/time.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <signal.h>
 
 #include "darts.h"
@@ -216,6 +217,47 @@ struct store_t {
   inline bool isNegative( store_item_t i ) const { return '-' == items[i][0]; }
   
 } extern g_store;
+
+struct external_module_t {
+
+  PyObject *p_pyglobal;
+  
+  inline bool initialize( const string &filename ) {
+    Py_Initialize();
+    PyObject *p_pyname = PyFile_FromString( (char *)filename.c_str(), "r" );
+    if( NULL == p_pyname ) return false;
+
+    PyRun_SimpleFile( PyFile_AsFile( p_pyname ), "evaluator.py" );
+    Py_DECREF( p_pyname );
+
+    p_pyname   = PyString_FromString("__main__");
+    p_pyglobal = PyImport_Import( p_pyname );
+
+    Py_DECREF( p_pyname );
+
+    return true;
+  }
+
+  inline void finalize() {
+    Py_DECREF( p_pyglobal );
+    Py_Finalize();
+  }
+
+  inline PyObject *call( const string& function_name, const string& args, ... ) {
+    PyObject *p_pyret, *p_pyfunc = PyObject_GetAttrString( p_pyglobal, function_name.c_str() );
+    va_list   argp;
+    
+    va_start( argp, args );
+    
+    if( NULL != p_pyfunc && PyCallable_Check(p_pyfunc) )
+      p_pyret = PyEval_CallFunction(p_pyfunc, args.c_str(), argp);
+
+    Py_DECREF( p_pyfunc );
+
+    return p_pyret;
+  }
+  
+} extern g_ext;
 
 struct sexp_stack_t {
 
@@ -819,8 +861,7 @@ struct proof_graph_t {
     nodes.push_back( pg_node_t( lit, type, nodes.size() ) );
     p2n[ lit.predicate ][ lit.terms.size() ].push_back( nodes.size()-1 );
 
-    if( 1 == lit.terms.size() ) 
-      for(int i=0; i<lit.terms.size(); i++) t2n[ lit.terms[i] ].push_back( nodes.size()-1 );
+    repeat(i, lit.terms.size()) t2n[ lit.terms[i] ].push_back( nodes.size()-1 );
     
     return nodes.size()-1;
     

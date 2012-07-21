@@ -13,10 +13,11 @@
 #include <tr1/unordered_set>
 
 
-store_t       g_store;
-int           g_verbose_level = 0;
+external_module_t g_ext;
+store_t           g_store;
+int               g_verbose_level = 0;
 deque<void(*)(int)> g_exit_callbacks;
-deque<string> g_xml_stack;
+deque<string>     g_xml_stack;
 
 void algorithm::infer( logical_function_t *p_out_best_h, sparse_vector_t *p_out_fv, lp_inference_cache_t *p_out_cache, lp_inference_cache_t *p_old_cache, inference_configuration_t& c, const logical_function_t &obs, const string &sexp_obs, const knowledge_base_t& kb ) {
 
@@ -64,7 +65,6 @@ void algorithm::infer( logical_function_t *p_out_best_h, sparse_vector_t *p_out_
 
     /* Reset the time. */
     c.timestart = getTimeofDaySec();
-    //c.timelimit = 1;
     
     switch( c.method ) {
     case CuttingPlaneBnB:
@@ -77,19 +77,10 @@ void algorithm::infer( logical_function_t *p_out_best_h, sparse_vector_t *p_out_
   
     if( c.ilp ) cout << p_out_cache->lp.solutionToString() << endl;
 
-    foreachc( pairwise_vars_t, iter_t1, p_out_cache->lprel.pp2v )
-      for( unordered_map<store_item_t, int>::const_iterator iter_t2=iter_t1->second.begin(); iter_t1->second.end()!=iter_t2; ++iter_t2 ) {
-        if( 0.5 < p_out_cache->lp.variables[ iter_t2->second ].optimized ) { p_out_cache->lp.optimized_obj -= p_out_cache->lp.variables[ iter_t2->second ].obj_val; }
-      }
-  
-    
   } else p_out_cache->lp.sol_type = NotAvailable;
 
   function::convertLPToHypothesis( p_out_best_h, p_out_fv, p_out_cache->lp, p_out_cache->lprel, p_out_cache->evc, p_out_cache->pg );
   p_out_cache->loss.setLoss( c.training_instance, *p_out_best_h, p_out_cache->lp.optimized_obj );
-
-  // repeat( i, p_out_cache->lp.variables.size() )
-  //   if( 0 == p_out_cache->lp.variables[i].name.find( "fc_loss" ) ) { p_out_cache->loss.loss += 1 - p_out_cache->lp.variables[i].optimized; p_out_cache->loss.maximum_loss++; }
   
 }
 
@@ -324,7 +315,7 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
   }
 
   unordered_map<string, int> confusion_matrix;
-  bool                       f_classified = false, f_structured = false;
+  bool                       f_classified = false, f_structured = false, f_kb_modified = false;
     
   for( uint_t a=0; a<args.size(); a++ ) {
   
@@ -371,19 +362,21 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
         if( has_key( cmd, 'b' ) ) continue;
           
         /* Identify the LF part. */
-        int i_lf = sr.stack.findFunctorArgument( ImplicationString );
+        int i_lf      = sr.stack.findFunctorArgument( ImplicationString );
 
         if( NULL != p_out_pckb ) {
           logical_function_t lf( *sr.stack.children[i_lf] );
           (*p_out_pckb)[ lf.branches[1].lit.predicate ][ lf.branches[1].lit.terms.size() ].push_back( sr.stack.toString() );
+          f_kb_modified = true;
         }
       }
 
       if( sr.stack.isFunctor( "O" ) && NULL != p_out_ic ) {
         /* Compile the knowledge base. */
-        if( !has_key( cmd, 'b' ) && 0 == p_out_kb->axioms.size() )
+        if( !has_key( cmd, 'b' ) && (f_kb_modified || 0 == p_out_kb->axioms.size() ) )
           if( !function::compileKB( p_out_kb, *p_out_pckb ) ) {
             cerr << "ERROR: Knowledge compilation failed." << endl; continue;
+            f_kb_modified = false;
           }
         
         int
@@ -541,6 +534,8 @@ bool _moduleProcessInferOptions( inference_configuration_t *p_out_con, command_o
   p_out_con->nbthreads             = atof( cmd[ 't' ].c_str() );
   p_out_con->extension_module      = cmd[ 'e' ];
 
+  if( has_key( cmd, 'e' ) ) g_ext.initialize( p_out_con->extension_module );
+
   if( "ls" == cmd['i'] )  p_out_con->method       = LocalSearch;
   else if( "rlp" == cmd['i'] )  p_out_con->method = RoundLP;
   else if( "bnb" == cmd['i'] )  p_out_con->method = BnB;
@@ -639,7 +634,6 @@ int main( int argc, char **pp_args ) {
   cout << "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>" << endl;
 
   function::beginXMLtag( "henry-output", "parameter=\"" + exec_options + "\"" );
-  Py_Initialize();
 
   signal( SIGINT, function::catch_int );
   
@@ -651,7 +645,7 @@ int main( int argc, char **pp_args ) {
   } else if( "infer" == cmd['m'] ) ret = _moduleInfer( cmd, args );
   else if( "learn" == cmd['m'] ) ret = _moduleLearn( cmd, args );
 
-  Py_Finalize();
+  g_ext.finalize();
   function::endXMLtag( "henry-output" );
   
   if( !ret ) { cerr << str_usage << endl; return 1; }

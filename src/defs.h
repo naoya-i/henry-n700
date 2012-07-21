@@ -16,7 +16,6 @@
 
 #include <sys/time.h>
 #include <stdlib.h>
-#include <stdarg.h>
 #include <signal.h>
 
 #include "darts.h"
@@ -221,13 +220,15 @@ struct store_t {
 struct external_module_t {
 
   PyObject *p_pyglobal;
+
+  inline external_module_t() : p_pyglobal(NULL) {}
   
   inline bool initialize( const string &filename ) {
     Py_Initialize();
     PyObject *p_pyname = PyFile_FromString( (char *)filename.c_str(), "r" );
     if( NULL == p_pyname ) return false;
 
-    PyRun_SimpleFile( PyFile_AsFile( p_pyname ), "evaluator.py" );
+    PyRun_SimpleFile( PyFile_AsFile( p_pyname ), (char *)filename.c_str() );
     Py_DECREF( p_pyname );
 
     p_pyname   = PyString_FromString("__main__");
@@ -239,18 +240,18 @@ struct external_module_t {
   }
 
   inline void finalize() {
-    Py_DECREF( p_pyglobal );
+    if( NULL != p_pyglobal ) Py_DECREF( p_pyglobal );
     Py_Finalize();
   }
 
-  inline PyObject *call( const string& function_name, const string& args, ... ) {
-    PyObject *p_pyret, *p_pyfunc = PyObject_GetAttrString( p_pyglobal, function_name.c_str() );
-    va_list   argp;
+  inline PyObject *call( const string& function_name, PyObject *p_args ) {
+
+    if( NULL == p_pyglobal ) return NULL;
     
-    va_start( argp, args );
+    PyObject *p_pyret, *p_pyfunc = PyObject_GetAttrString( p_pyglobal, function_name.c_str() );
     
     if( NULL != p_pyfunc && PyCallable_Check(p_pyfunc) )
-      p_pyret = PyEval_CallFunction(p_pyfunc, args.c_str(), argp);
+      p_pyret = PyEval_CallObject(p_pyfunc, p_args);
 
     Py_DECREF( p_pyfunc );
 
@@ -548,7 +549,7 @@ struct pg_node_t {
   inline pg_node_t( const literal_t &_lit, pg_node_type_t _type, int _n ) : n(_n), depth(0), parent_node(-1), obs_node(-1), lit( _lit ), type( _type ) {};
 
   inline string toString() const {
-    return lit.toString();
+    return lit.toString() + ::toString( n, ":%d" );
   }
   
 };

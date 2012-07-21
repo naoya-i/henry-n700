@@ -373,11 +373,13 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
 
       if( sr.stack.isFunctor( "O" ) && NULL != p_out_ic ) {
         /* Compile the knowledge base. */
-        if( !has_key( cmd, 'b' ) && (f_kb_modified || 0 == p_out_kb->axioms.size() ) )
+        if( !has_key( cmd, 'b' ) && (f_kb_modified || 0 == p_out_kb->axioms.size() ) ) {
+          f_kb_modified = false;
+          
           if( !function::compileKB( p_out_kb, *p_out_pckb ) ) {
             cerr << "ERROR: Knowledge compilation failed." << endl; continue;
-            f_kb_modified = false;
           }
+        }
         
         int
           i_x    = sr.stack.findFunctorArgument( AndString ), i_y    = sr.stack.findFunctorArgument( FnTrainingLabel ),

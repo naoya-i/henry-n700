@@ -273,37 +273,15 @@ inline int _createConjVar( linear_programming_problem_t *p_out_lp, lp_problem_ma
   return v_hn;
 }
 
-/* c <=> h_i ^ h_j */
-inline int _createCooccurringVar( linear_programming_problem_t *p_out_lp, lp_problem_mapping_t *p_out_lprel, const proof_graph_t &pg, int ni, int nj ) {
-  if( ni > nj ) swap(ni, nj);
-  
-  int& v_u = p_out_lprel->nn2uv[ni][nj];
-  if( 0 != v_u ) return v_u;
-
-  v_u = p_out_lp->addVariable( lp_variable_t( "co_" + pg.nodes[ni].lit.toString() + "," + pg.nodes[nj].lit.toString() ) );
-  
-  /* u <=> h_i ^ h_j */
-  lp_constraint_t con_u( "c_hihj", Range, 0, 1 );
-  con_u.push_back( _createNodeVar( p_out_lp, p_out_lprel, pg, ni ), 1.0 );
-  con_u.push_back( _createNodeVar( p_out_lp, p_out_lprel, pg, nj ), 1.0 );
-          
-  con_u.rhs = 1.0 * con_u.vars.size() - 1;
-  con_u.push_back( v_u, -1.0 * con_u.vars.size() );
-          
-  p_out_lp->addConstraint( con_u );
-    
-  return v_u;
-}
-
-/* sc <=> x=y ^ h_i ^ h_j */
-inline int _createUnifyCooccurringVar( linear_programming_problem_t *p_out_lp, lp_problem_mapping_t *p_out_lprel, lp_inference_cache_t *p_out_cache, const proof_graph_t &pg, store_item_t ti, store_item_t tj, int ni, int nj ) {
-  int v_sc    = p_out_lp->addVariable( lp_variable_t( "sc_"+ g_store.claim(ti) + "," + g_store.claim(tj) + "," + pg.nodes[ni].lit.toString() + "," + pg.nodes[nj].lit.toString() ) );
+/* sc <=> x=y ^ h_i ^ h_j ^ ... ^ h_n */
+inline int _createUnifyCooccurringVar( linear_programming_problem_t *p_out_lp, lp_problem_mapping_t *p_out_lprel, lp_inference_cache_t *p_out_cache, const proof_graph_t &pg, store_item_t ti, store_item_t tj, const vector<int> &literals ) {
+  int v_sc    = p_out_lp->addVariable( lp_variable_t( "sc_"+ g_store.claim(ti) + "~" + g_store.claim(tj) + "," + "~" ) );
   int v_coref = _createCorefVar( p_out_lp, p_out_lprel, p_out_cache, ti, tj );
   
   lp_constraint_t con_sc( "sc_sxyhihj", Range, 0, 1 );
-  //con_sc.push_back( _createCooccurringVar( p_out_lp, p_out_lprel, pg, ni, nj ), 1.0 );
-  con_sc.push_back( _createNodeVar( p_out_lp, p_out_lprel, pg, ni ), 1.0 );//_createCooccurringVar( p_out_lp, p_out_lprel, pg, ni, nj ), 1.0 );
-  con_sc.push_back( _createNodeVar( p_out_lp, p_out_lprel, pg, nj ), 1.0 );//_createCooccurringVar( p_out_lp, p_out_lprel, pg, ni, nj ), 1.0 );
+  repeat( i, literals.size() )
+    con_sc.push_back( _createNodeVar( p_out_lp, p_out_lprel, pg, literals[i] ), 1.0 );
+  
   if( -1 != v_coref ) con_sc.push_back( v_coref, 1.0 );
           
   con_sc.rhs = 1.0 * con_sc.vars.size() - 1;
@@ -312,30 +290,6 @@ inline int _createUnifyCooccurringVar( linear_programming_problem_t *p_out_lp, l
   p_out_lp->addConstraint( con_sc );
   
   return v_sc;
-}
-
-inline bool _isDisjoint( const literal_t &li, const literal_t &lj ) {
-
-  static unordered_set<string> disjoint_set;
-  static bool f_disjoint_loaded = false;
-  
-  if( !f_disjoint_loaded ) {
-    f_disjoint_loaded = true;
-    ifstream ifs_disj( "/home/naoya-i/work/unkconf2012/plan-disj.tsv" );
-    string   pa1, pa2;
-    while( !ifs_disj.eof() ) {
-      ifs_disj >> pa1 >> pa2;
-      if( pa1 > pa2 ) swap( pa1, pa2 );
-      disjoint_set.insert( pa1+pa2 );
-    }
-    ifs_disj.close();
-  }
-
-  string pa1 = li.toPredicateArity(), pa2 = lj.toPredicateArity();
-  if( pa1 > pa2 ) swap( pa1, pa2 );
-  
-  return disjoint_set.end() != disjoint_set.find( pa1+pa2 );
-  
 }
 
 bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_mapping_t *p_out_lprel, lp_inference_cache_t *p_out_cache, const knowledge_base_t &kb, const proof_graph_t &pg, const variable_cluster_t &evc, inference_configuration_t& c ) {
@@ -420,6 +374,17 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
     
   }
 
+  PyObject *pymap = PyDict_New();
+
+  foreachc( pg_term_map_t, iter_tm, pg.t2n ) {
+    PyObject *pylist = PyList_New( iter_tm->second.size() );
+    
+    repeat( i, iter_tm->second.size() )
+      PyList_SetItem( pylist, i, PyString_FromString( pg.nodes[ iter_tm->second[i] ].toString().c_str() ) );
+    
+    PyDict_SetItemString( pymap, g_store.claim(iter_tm->first).c_str(), pylist );
+  }
+  
   /* Factor: variable unification factors */
   vector<store_item_t> ord_logical_terms( logical_terms.begin(), logical_terms.end() );
   unordered_map<int, unordered_set<int> > constants_unifiables;
@@ -427,55 +392,69 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
   repeat( i, ord_logical_terms.size() ) {
     repeatf( j, i, ord_logical_terms.size() ) {
 
-      /* Collecting the evidence. */
       factor_t     fc_unif_evid( OrFactorTrigger );
       store_item_t ti = ord_logical_terms[i], tj = ord_logical_terms[j]; if( ti > tj ) swap(ti, tj);
 
       lp_constraint_t con_expunf( "expunf", LessEqual, 0 );
       
-      const vector<int> *p_nodes_ti, *p_nodes_tj;
-      if( !pg.getNode( &p_nodes_ti, ti ) || !pg.getNode( &p_nodes_tj, tj ) ) continue;
-      if( ti != tj && g_store.isConstant(ti) && g_store.isConstant(tj) ) continue;
+      /* Collecting the evidence. */
+      PyObject *pyret = g_ext.call( "cbGetUnificationEvidence", Py_BuildValue( "ssO", g_store.claim(ti).c_str(), g_store.claim(tj).c_str(), pymap ) );
 
-      repeat( nti, p_nodes_ti->size() ) {
-        repeat( ntj, p_nodes_tj->size() ) {
-          if( c.isTimeout() ) return false;
+      /* pyret must be [(0.1, [1, 3, 5]), (1.2, [4, 5, 6]), ...]*/
+      repeat( k, PyList_Size(pyret) ) {
+        if( c.isTimeout() ) return false;
 
-          int ni = (*p_nodes_ti)[nti], nj = (*p_nodes_tj)[ntj]; if( ni == nj || (ti == tj && ni > nj) ) continue;
-          int ind_ti; repeat( k, pg.nodes[ni].lit.terms.size() ) { if( ti == pg.nodes[ni].lit.terms[k] ) ind_ti = k; }
-          int ind_tj; repeat( k, pg.nodes[nj].lit.terms.size() ) { if( tj == pg.nodes[nj].lit.terms[k] ) ind_tj = k; }
-
-          /* Do I have to add these as the evidence of unification? */
-          if( ti != tj && pg.nodes[ni].lit.predicate == pg.nodes[nj].lit.predicate && ind_ti == ind_tj ) {
-            V(5) cerr << "Evidence: " << g_store.claim(ti) +"~"+ g_store.claim(tj) << ": " << pg.nodes[ni].lit.toString() +","+ pg.nodes[nj].lit.toString() << endl;
-            fc_unif_evid.push_back( _createUnifyCooccurringVar( p_out_lp, p_out_lprel, p_out_cache, pg, ti, tj, ni, nj ) );
-            con_expunf.push_back( _createCorefVar(p_out_lp, p_out_lprel, p_out_cache, ti, tj), -1.0 );
-            con_expunf.push_back( _createNodeVar(p_out_lp, p_out_lprel, pg, ni), -1.0 );
-            con_expunf.push_back( _createNodeVar(p_out_lp, p_out_lprel, pg, nj), -1.0 );
-          }
-
-          /* Factor: Unification */
-          if( _isDisjoint( pg.nodes[ni].lit, pg.nodes[nj].lit ) ) {
-            factor_t fc_unif( AndFactorTrigger );
-            fc_unif.push_back( _createNodeVar( p_out_lp, p_out_lprel, pg, ni ) );
-            fc_unif.push_back( _createNodeVar( p_out_lp, p_out_lprel, pg, nj ) );
-            if( ti != tj ) fc_unif.push_back( _createCorefVar( p_out_lp, p_out_lprel, p_out_cache, ti, tj ) );
-            fc_unif.apply( p_out_lp, "fc_ud_" + g_store.claim(ti) +","+ g_store.claim(tj) +","+ pg.nodes[ni].lit.toString() +","+ pg.nodes[nj].lit.toString(), true );
-          }
-
-          if( LabelNode == pg.nodes[ni].type || LabelNode == pg.nodes[nj].type ) {
-            factor_t fc_unif( AndFactorTrigger );
-            fc_unif.push_back( _createUnifyCooccurringVar( p_out_lp, p_out_lprel, p_out_cache, pg, ti, tj, ni, nj ) );
-            int v_fc_u = fc_unif.apply( p_out_lp, "fc_u_g_" + g_store.claim(ti) +","+ g_store.claim(tj) +","+ pg.nodes[ni].toString() +","+ pg.nodes[nj].toString() );
-            p_out_lp->variables[ v_fc_u ].obj_val = 99999.0;
-          }
+        /* Enumerate evidential literals. */
+        PyObject    *pytuple = PyList_GetItem( pyret, k ), *pylist = PyTuple_GetItem( pytuple, 1 );
+        double       score   = PyFloat_AsDouble( PyTuple_GetItem( pytuple, 0 ) );
+        vector<int>  evidential_literals;
+        string       signature = "";
           
-          // else if( !g_f_weighted_abduction ) {
-          //   int v_fc_u = fc_unif.apply( p_out_lp, "fc_u_" + g_store.claim(t1) +","+ g_store.claim(t2) +","+ l_i.toString() +","+ l_j.toString() );
-          //   p_out_lprel->feature_vector[ v_fc_u ][ "FC_VU_" + l_i.toPredicateArity() + ::toString( ind_t1, ":%d" ) + l_j.toPredicateArity() + ::toString( ind_t2, ":%d" ) ] = 1;
-          // }
+        repeat( l, PyList_Size(pylist) ) {
+          evidential_literals.push_back( PyInt_AsLong( PyList_GetItem( pylist, l ) ) );
+          signature += pg.nodes[ evidential_literals[l] ].toString() + " ";
+        }
+        
+        /* Default. */
+        V(5) cerr << "Evidence: " << g_store.claim(ti) +"~"+ g_store.claim(tj) << ": " << signature << " (score = " << score << ")" << endl;        
+        fc_unif_evid.push_back( _createUnifyCooccurringVar( p_out_lp, p_out_lprel, p_out_cache, pg, ti, tj, evidential_literals ) );
+        
+        con_expunf.push_back( _createCorefVar(p_out_lp, p_out_lprel, p_out_cache, ti, tj), -1.0 );
+
+        repeat( l, evidential_literals.size() ) 
+          con_expunf.push_back( _createNodeVar(p_out_lp, p_out_lprel, pg, evidential_literals[l]), -1.0 );
           
-        } }
+        /* Factor: unification */
+        if( 0.0 != score ) {
+          factor_t fc_unif( AndFactorTrigger );
+          
+          repeat( l, evidential_literals.size() ) 
+            fc_unif.push_back( _createNodeVar( p_out_lp, p_out_lprel, pg, evidential_literals[l] ) );
+          
+          if( ti != tj ) fc_unif.push_back( _createCorefVar( p_out_lp, p_out_lprel, p_out_cache, ti, tj ) );
+
+          if( -9999 != score ) {
+            int v_fc_ue = fc_unif.apply( p_out_lp, "fc_ue_" + g_store.claim(ti) +","+ g_store.claim(tj) +","+ signature );
+            p_out_lprel->feature_vector[ v_fc_ue ][ "FC_UNIFY_EVIDENCE" ] = score;
+          } else
+            fc_unif.apply( p_out_lp, "fc_ue_" + g_store.claim(ti) +","+ g_store.claim(tj) +","+ signature, true );
+        }
+
+        // if( LabelNode == pg.nodes[ni].type || LabelNode == pg.nodes[nj].type ) {
+        //   factor_t fc_unif( AndFactorTrigger );
+        //   fc_unif.push_back( _createUnifyCooccurringVar( p_out_lp, p_out_lprel, p_out_cache, pg, ti, tj, ni, nj ) );
+        //   int v_fc_u = fc_unif.apply( p_out_lp, "fc_u_g_" + g_store.claim(ti) +","+ g_store.claim(tj) +","+ pg.nodes[ni].toString() +","+ pg.nodes[nj].toString() );
+        //   p_out_lp->variables[ v_fc_u ].obj_val = 99999.0;
+        // }
+          
+        // else if( !g_f_weighted_abduction ) {
+        //   int v_fc_u = fc_unif.apply( p_out_lp, "fc_u_" + g_store.claim(t1) +","+ g_store.claim(t2) +","+ l_i.toString() +","+ l_j.toString() );
+        //   p_out_lprel->feature_vector[ v_fc_u ][ "FC_VU_" + l_i.toPredicateArity() + ::toString( ind_t1, ":%d" ) + l_j.toPredicateArity() + ::toString( ind_t2, ":%d" ) ] = 1;
+        // }
+          
+      }
+
+      Py_DECREF( pyret );
 
       if( 0 < fc_unif_evid.triggers.size() ) {
         if( g_store.isConstant(ti) && !g_store.isConstant(tj) ) constants_unifiables[tj].insert(ti);
@@ -490,7 +469,7 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
           con_expunf.push_back( v_fc_ue, 3.0 );
           p_out_lp->addConstraint( con_expunf );
           
-          p_out_lprel->feature_vector[ v_fc_ue ][ "FC_UNIFY_FOUND_EVIDENCES" ] = 3;
+          p_out_lprel->feature_vector[ v_fc_ue ][ "FC_UNIFY_FOUND_EVIDENCES" ] = 2;
           
           /* Factor: new assumption. */
           factor_t fc_prior( IdenticalFactorTrigger );
@@ -503,6 +482,8 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
       
     } }
 
+  Py_DECREF( pymap );
+  
   /* Impose mutual exclusiveness over variable equaility relation. */
   for( unordered_map<store_item_t, unordered_set<int> >::iterator iter_cm=constants_unifiables.begin(); constants_unifiables.end()!=iter_cm; ++iter_cm ) {
     if( 1 == iter_cm->second.size() ) continue;
@@ -733,7 +714,6 @@ bool function::compileKB( knowledge_base_t *p_out_kb, const precompiled_kb_t &pc
 
   unordered_map<string, string> pa2axioms;
 
-  p_out_kb->da.clear();
   p_out_kb->keys.clear();
   p_out_kb->axioms.clear();
   
@@ -867,7 +847,7 @@ store_item_t _findRepr( unordered_set<store_item_t> vars ) {
 
 double loss_t::_lossVariableWise( unordered_set<store_item_t> *p_out_rel_vars, const logical_function_t& y_lf, const logical_function_t y_current ) {
 
-  g_ext.call( "loss", "ss", y_current.toString().c_str(), y_lf.toString().c_str() );
+  //g_ext.call( "loss", "ss", y_current.toString().c_str(), y_lf.toString().c_str() );
   
   return 0.0;
   

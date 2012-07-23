@@ -76,6 +76,12 @@ void algorithm::infer( logical_function_t *p_out_best_h, sparse_vector_t *p_out_
     };
   
     if( c.ilp ) cout << p_out_cache->lp.solutionToString() << endl;
+    
+    foreachc( pairwise_vars_t, iter_t1, p_out_cache->lprel.pp2v )
+      for( unordered_map<store_item_t, int>::const_iterator iter_t2=iter_t1->second.begin(); iter_t1->second.end()!=iter_t2; ++iter_t2 ) {
+        if( 0.5 < p_out_cache->lp.variables[ iter_t2->second ].optimized )
+          p_out_cache->lp.optimized_obj -= -0.00001;
+      }
 
   } else p_out_cache->lp.sol_type = NotAvailable;
 
@@ -136,7 +142,7 @@ void algorithm::learn( score_function_t *p_out_sfunc, const learn_configuration_
              << log_head << "Loss:  " << cache.loss.maximum_loss << " >= " << cache.loss.loss << " >= " << cache.loss.minimum_loss << endl;
 
       cache.printStatistics();
-      if( ci.proofgraph ) cache.pg.printGraph( cache.lp, cache.lprel, "id=\"i"+ toString(1+n, "%d") +"pred\" type=\"Prediction\">" );
+      if( ci.proofgraph ) cache.pg.printGraph( cache.lp, cache.lprel, "id=\"i"+ toString(1+n, "%d") +"pred\" type=\"Prediction\"" );
       
       function::endXMLtag( "current-prediction" );
 
@@ -189,7 +195,7 @@ void algorithm::learn( score_function_t *p_out_sfunc, const learn_configuration_
         s_correct = ci.p_sfunc->getScore( v_correct );
         
         another_cache.printStatistics();
-        if( ci.proofgraph ) another_cache.pg.printGraph( another_cache.lp, another_cache.lprel, "id=\"i"+ toString(1+n, "%d") +"hvc\" type=\"HiddenVariableCompletion\">" );
+        if( ci.proofgraph ) another_cache.pg.printGraph( another_cache.lp, another_cache.lprel, "id=\"i"+ toString(1+n, "%d") +"hvc\" type=\"HiddenVariableCompletion\"" );
 
         function::endXMLtag( "hidden-variable-completion" );
 

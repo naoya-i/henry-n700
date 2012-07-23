@@ -17,8 +17,8 @@ def main():
 	query = "/henry-output/result-inference/proofgraph"
 
 	if None != pa.graph:
-		query = "/henry-output/learn-process/training/*/proofgraph[@id=\"%s\"]" % pa.graph
-
+		query = "/henry-output/learn-process/training/*/proofgraph[@id=\"%s\"]" % "|".join( pa.graph )
+		
 	for pg in t.xpath( query ):	
 
 		print "digraph {"

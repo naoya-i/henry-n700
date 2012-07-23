@@ -20,7 +20,7 @@
 
 #include "darts.h"
 
-#include </usr/include/python2.7/Python.h>
+#include <python2.7/Python.h>
 
 #define has_key( dict, key ) (dict.end() != dict.find( key ))
 
@@ -95,7 +95,7 @@ class random_double_t {
  private:
   double m_value;
  public:
-  inline random_double_t() { m_value = 1; 2.0 * (rand() % 10000) / 10000.0; }
+  inline random_double_t() { m_value = 0; 2.0 * (rand() % 10000) / 10000.0; }
   inline operator double () const { return m_value; }
   inline double operator += ( double other ) { m_value += other; }
   inline double operator = ( double other ) { m_value = other; }

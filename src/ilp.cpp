@@ -238,10 +238,10 @@ ilp_solution_type_t function::solveLP_BnB( linear_programming_problem_t *p_out_l
       repeat( j, con.vars.size() ) sosv.push_back( var_map[ con.vars[j] ] );
       model.addSOS( &sosv[0], &con.coes[0], sosv.size(), SOS1 == con.opr ? GRB_SOS_TYPE1 : GRB_SOS_TYPE2 );
       break; }
-    case Equal: {        model.addConstr( expr_lin, GRB_EQUAL, con.lhs );         break; }
-    case LessEqual: {    model.addConstr( expr_lin, GRB_LESS_EQUAL, con.rhs );    break; }
-    case GreaterEqual: { model.addConstr( expr_lin, GRB_GREATER_EQUAL, con.rhs ); break; }
-    case Range: {        model.addRange( expr_lin, con.lhs, con.rhs );            break; }
+    case Equal: {        model.addConstr( expr_lin, GRB_EQUAL, con.lhs, con.name );         break; }
+    case LessEqual: {    model.addConstr( expr_lin, GRB_LESS_EQUAL, con.rhs, con.name );    break; }
+    case GreaterEqual: { model.addConstr( expr_lin, GRB_GREATER_EQUAL, con.rhs, con.name ); break; }
+    case Range: {        model.addRange( expr_lin, con.lhs, con.rhs, con.name );            break; }
     default:             cerr << "SolveLP_BnB: Unknown constraint type." << endl;
     }, p_out_lp->constraints[i].toString( p_out_lp->variables )
                   );
@@ -296,7 +296,17 @@ ilp_solution_type_t function::solveLP_BnB( linear_programming_problem_t *p_out_l
     signal( SIGINT, _cb_stop_ilp );
     GRBEXECUTE( model.optimize() );
     signal( SIGINT, catch_int );
-  }    
+  }
+
+  // model.computeIIS();
+  // GRBConstr *cnstrs = model.getConstrs();
+
+  // for (int i = 0; i < model.get(GRB_IntAttr_NumConstrs); ++i) {
+  //   if (cnstrs[i].get(GRB_IntAttr_IISConstr) == 1) {
+  //     cout << cnstrs[i].get(GRB_StringAttr_ConstrName) << endl;
+  //   } }
+
+  // delete[] cnstrs;                                                           
   
   if( NULL != p_out_cache ) p_out_cache->elapsed_ilp = getTimeofDaySec() - time_start;
   

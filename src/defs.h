@@ -253,6 +253,11 @@ struct external_module_t {
     if( NULL != p_pyfunc && PyCallable_Check(p_pyfunc) )
       p_pyret = PyEval_CallObject(p_pyfunc, p_args);
 
+    if( NULL == p_pyret ) {
+      cerr << "An error occurred in the external module!" << endl;
+      if( PyErr_Occurred() ) PyErr_Print();
+    }
+    
     Py_DECREF( p_pyfunc );
 
     return p_pyret;

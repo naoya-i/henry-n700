@@ -229,7 +229,7 @@ int _createCorefVar( linear_programming_problem_t *p_out_lp, lp_problem_mapping_
   if( i_v1->second != i_v2->second ) return -1;
   
   int& ret = t1 < t2 ? p_out_lprel->pp2v[t1][t2] : p_out_lprel->pp2v[t2][t1];
-  if( 0 == ret ) { ret = p_out_lp->addVariable( lp_variable_t( "p_"+g_store.claim(t1)+g_store.claim(t2) ) ); p_out_lp->variables[ ret ].obj_val = -0.00001; }
+  if( 0 == ret ) { ret = p_out_lp->addVariable( lp_variable_t( "p_"+g_store.claim(t1)+g_store.claim(t2) ) ); p_out_lp->variables[ ret ].obj_val = -0.0001; }
   
   return ret;
 }
@@ -278,7 +278,7 @@ inline int _createUnifyCooccurringVar( linear_programming_problem_t *p_out_lp, l
   int v_sc    = p_out_lp->addVariable( lp_variable_t( "sc_"+ g_store.claim(ti) + "~" + g_store.claim(tj) + "," + "~" ) );
   int v_coref = _createCorefVar( p_out_lp, p_out_lprel, p_out_cache, ti, tj );
 
-  lp_constraint_t con_sc( "sc_sxyhihj", Range, 0, 1 );
+  lp_constraint_t con_sc( "sc_sxyhihj"+ g_store.claim(ti) + "~" + g_store.claim(tj) + "," + "~", Range, 0, 1 );
   repeat( i, literals.size() )
     con_sc.push_back( _createNodeVar( p_out_lp, p_out_lprel, pg, literals[i] ), 1.0 );
   
@@ -305,14 +305,14 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
 
     repeat( j, pg.nodes[i].lit.terms.size() ) logical_terms.insert( pg.nodes[i].lit.terms[j] );
     
-    /* Factor: prior. */
-    if( g_f_weighted_abduction ? ObservableNode == pg.nodes[i].type : LabelNode != pg.nodes[i].type ) {
-      factor_t fc_prior( IdenticalFactorTrigger );
-      fc_prior.push_back( _createNodeVar( p_out_lp, p_out_lprel, pg, i ) );
+    // /* Factor: prior. */
+    // if( g_f_weighted_abduction ? ObservableNode == pg.nodes[i].type : LabelNode != pg.nodes[i].type ) {
+    //   factor_t fc_prior( IdenticalFactorTrigger );
+    //   fc_prior.push_back( _createNodeVar( p_out_lp, p_out_lprel, pg, i ) );
 
-      int v_fc_prior = fc_prior.apply( p_out_lp, "fc_prior_" + pg.nodes[i].toString() );
-      p_out_lprel->feature_vector[ v_fc_prior ][ "FC_PRIOR_" + pg.nodes[i].lit.toPredicateArity() ] = g_f_weighted_abduction ? -pg.nodes[i].lit.wa_number : -1;
-    }
+    //   int v_fc_prior = fc_prior.apply( p_out_lp, "fc_prior_" + pg.nodes[i].toString() );
+    //   p_out_lprel->feature_vector[ v_fc_prior ][ "FC_PRIOR_" + pg.nodes[i].lit.toPredicateArity() ] = g_f_weighted_abduction ? -pg.nodes[i].lit.wa_number : -1;
+    // }
     
     /* Factor: explained. */
     factor_t fc_explained( OrFactorTrigger );
@@ -333,25 +333,25 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
         repeat( k, pg.hypernodes[ iter_eg->second[j] ].size() )
           wa_conj_costs += pg.nodes[ pg.hypernodes[ iter_eg->second[j] ][k] ].lit.wa_number;
         
-        con_expimp.push_back( v_conj, -1.0 );
+        con_expimp.push_back( _createNodeVar( p_out_lp, p_out_lprel, pg, pg.hypernodes[ iter_eg->second[j] ][0] ), -1.0 );
         
         int v_fc = fc_assume.apply( p_out_lp, "fc_a_" + ::toString(iter_eg->second[j], "%d") );
         p_out_lprel->feature_vector[ v_fc ]["FC_A_" + pg.getEdgeName( i, iter_eg->second[j] ) ] = g_f_weighted_abduction ? -wa_conj_costs : -1.5;
       }
     }
 
-    int v_fc_exp = fc_explained.apply( p_out_lp, "fc_e_" + pg.nodes[i].lit.toString() );;
+    int v_fc_exp = fc_explained.apply( p_out_lp, "fc_e_" + pg.nodes[i].lit.toString() );
     if( -1 != v_fc_exp ) p_out_lprel->feature_vector[ v_fc_exp ]["FC_E_" + pg.nodes[i].lit.toPredicateArity() ] = g_f_weighted_abduction ? pg.nodes[i].lit.wa_number : 1;
 
-    if( -1 != v_fc_exp ) {
-      lp_constraint_t con_h( "fcimp", LessEqual, 0 );
-      con_h.push_back( v_fc_exp, 1.0 );
-      con_h.push_back( _createNodeVar( p_out_lp, p_out_lprel, pg, i ), -1.0 );
-      p_out_lp->addConstraint( con_h );
+    // if( -1 != v_fc_exp ) {
+    //   lp_constraint_t con_h( "fcimp", LessEqual, 0 );
+    //   con_h.push_back( v_fc_exp, 1.0 );
+    //   con_h.push_back( _createNodeVar( p_out_lp, p_out_lprel, pg, i ), -1.0 );
+    //   p_out_lp->addConstraint( con_h );
 
-      con_expimp.push_back( v_fc_exp, 1.0 );
-      p_out_lp->addConstraint( con_expimp );
-    }
+    //   con_expimp.push_back( v_fc_exp, 1.0 );
+    //   p_out_lp->addConstraint( con_expimp );
+    // }
 
     /* Factor: Conjunction duty. */
     pg_node_hypernode_map_t::const_iterator iter_n2hn = pg.n2hn.find(i);
@@ -391,7 +391,7 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
 
   repeat( i, ord_logical_terms.size() ) {
     repeatf( j, i, ord_logical_terms.size() ) {
-
+      
       factor_t     fc_unif_evid( OrFactorTrigger );
       store_item_t ti = ord_logical_terms[i], tj = ord_logical_terms[j]; if( ti > tj ) swap(ti, tj);
 
@@ -400,7 +400,11 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
       /* Collecting the evidence. */
       PyObject *pyret = g_ext.call( "cbGetUnificationEvidence", Py_BuildValue( "ssO", g_store.claim(ti).c_str(), g_store.claim(tj).c_str(), pymap ) );
 
+      if( NULL == pyret ) continue;
+      
       /* pyret must be [(0.1, [1, 3, 5]), (1.2, [4, 5, 6]), ...]*/
+      bool f_including_label = false;
+      
       repeat( k, PyList_Size(pyret) ) {
         if( c.isTimeout() ) return false;
 
@@ -415,26 +419,28 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
           signature += pg.nodes[ evidential_literals[l] ].toString() + " ";
         }
         
-        /* Default. */
+        int v_sc = _createUnifyCooccurringVar( p_out_lp, p_out_lprel, p_out_cache, pg, ti, tj, evidential_literals );
+        
         V(5) cerr << "Evidence: " << g_store.claim(ti) +"~"+ g_store.claim(tj) << ": " << signature << " (score = " << score << ")" << endl;        
-        fc_unif_evid.push_back( _createUnifyCooccurringVar( p_out_lp, p_out_lprel, p_out_cache, pg, ti, tj, evidential_literals ) );
+        fc_unif_evid.push_back( v_sc );
 
-        repeat( l, evidential_literals.size() ) 
+        repeat( l, evidential_literals.size() )
           con_expunf.push_back( _createNodeVar(p_out_lp, p_out_lprel, pg, evidential_literals[l]), -1.0 );
         
         /* Factor: unification */
         if( 0.0 != score ) {
           if( -9999 != score ) {
             bool f_is_illusion = LabelNode == pg.nodes[evidential_literals[0]].type || LabelNode == pg.nodes[evidential_literals[1]].type;
-            
+            f_including_label |= f_is_illusion;
+
             factor_t fc_unif( IdenticalFactorTrigger );
-            fc_unif.push_back( _createUnifyCooccurringVar( p_out_lp, p_out_lprel, p_out_cache, pg, ti, tj, evidential_literals ) );
+            fc_unif.push_back( v_sc );
 
             int v_fc_ue = fc_unif.apply( p_out_lp, (f_is_illusion ? "fc_u_g_" : "fc_ue_") + g_store.claim(ti) +","+ g_store.claim(tj) +","+ signature );
             
             if( f_is_illusion ) p_out_lp->variables[ v_fc_ue ].obj_val = 9999;
-            else                p_out_lprel->feature_vector[ v_fc_ue ][ "FC_UNIFY_EVIDENCE" + g_store.claim( pg.nodes[evidential_literals[0]].lit.predicate ) ] = score;
-            
+            else                p_out_lprel->feature_vector[ v_fc_ue ][ "FC_UNIFY_EVIDENCE_" + g_store.claim( pg.nodes[evidential_literals[0]].lit.predicate ) ] = score;
+
           } else {
             factor_t fc_unif( AndFactorTrigger );
           
@@ -443,7 +449,7 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
           
             if( ti != tj ) fc_unif.push_back( _createCorefVar( p_out_lp, p_out_lprel, p_out_cache, ti, tj ) );
           
-            //fc_unif.apply( p_out_lp, "fc_ue_" + g_store.claim(ti) +","+ g_store.claim(tj) +","+ signature, true );
+            fc_unif.apply( p_out_lp, "fc_ue_" + g_store.claim(ti) +","+ g_store.claim(tj) +","+ signature, true );
           }
         }
           
@@ -457,39 +463,57 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
       }
 
       if( ti != tj && !g_store.isConstant(ti) && !g_store.isConstant(tj) ) {
-        int v_fc_ue = fc_unif_evid.apply( p_out_lp, "fc_ue_" + g_store.claim(ti) +","+ g_store.claim(tj) );
+        int v_fc_ue = fc_unif_evid.apply( p_out_lp, (f_including_label ? "fc_u_g_" : "fc_ue_") + g_store.claim(ti) +","+ g_store.claim(tj) );
         
         if( -1 != v_fc_ue ) {
-          //{
 
-          //con_expunf.push_back( _createCorefVar(p_out_lp, p_out_lprel, p_out_cache, ti, tj), -1.0 );
+          /* e1 v e2 v ... v en => ue ^ coref */
+          // repeat( k, fc_unif_evid.triggers.size() ) {
+          //   lp_constraint_t con_h( "fcimp", LessEqual, 0 );
+          //   con_h.push_back( fc_unif_evid.triggers[k], 2.0  );
+          //   con_h.push_back( v_fc_ue, -1.0 );
+          //   con_h.push_back( _createCorefVar(p_out_lp, p_out_lprel, p_out_cache, ti, tj), -1.0 );
+          //   p_out_lp->addConstraint( con_h );
+          // }
+          
+          //con_expunf.push_back( _createCorefVar(p_out_lp, p_out_lprel, p_out_cache, ti, tj), 2.0 );
           con_expunf.push_back( v_fc_ue, 2.0 );
           p_out_lp->addConstraint( con_expunf );
 
-          p_out_lprel->feature_vector[ v_fc_ue ][ "FC_UNIFY_FOUND_EVD" ] = -1;
+          // if( !f_including_label )
+          //   p_out_lprel->feature_vector[ v_fc_ue ][ "FC_UNIFY_FOUND_EVD" ] = 1.0;
+          // else
+          //   p_out_lp->variables[ v_fc_ue ].obj_val = 9999.0;
           
-          /* Factor: new assumption. */
-          // factor_t fc_prior( IdenticalFactorTrigger );
-          // fc_prior.push_back( _createCorefVar( p_out_lp, p_out_lprel, p_out_cache, ti, tj ) );
-          // int v_fc_prior = fc_prior.apply( p_out_lp, "fc_ua_" + g_store.claim(ti) +","+ g_store.claim(tj) );
-          // p_out_lprel->feature_vector[ v_fc_prior ][ "FC_UNIFY_PRIOR" ] = -1;
-
-          lp_constraint_t con_h( "fcimp", LessEqual, 0 );
-          con_h.push_back( v_fc_ue, 1.0 );
-          con_h.push_back( _createCorefVar(p_out_lp, p_out_lprel, p_out_cache, ti, tj), -1.0 );
-          p_out_lp->addConstraint( con_h );
+          // /* Factor: new assumption. */
+          // if( f_including_label ) {
+          //   p_out_lp->variables[ _createCorefVar( p_out_lp, p_out_lprel, p_out_cache, ti, tj ) ].obj_val = -1;
+          //   p_out_lp->variables[ _createCorefVar( p_out_lp, p_out_lprel, p_out_cache, ti, tj ) ].name = "fc_u_g_";
+          // } else {
+          //   factor_t fc_prior( IdenticalFactorTrigger );
+          //   fc_prior.push_back( _createCorefVar( p_out_lp, p_out_lprel, p_out_cache, ti, tj ) );
+          //   int v_fc_prior = fc_prior.apply( p_out_lp, "fc_ua_" + g_store.claim(ti) +","+ g_store.claim(tj) );
+          //   p_out_lprel->feature_vector[ v_fc_prior ][ "FC_UNIFY_PRIOR" ] = -1;
+          // }
           
-          const vector<int> *p_nodes_ti, *p_nodes_tj;
-          pg.getNode( &p_nodes_ti, ti ); pg.getNode( &p_nodes_tj, tj );
+          // lp_constraint_t con_h( "fcimp", LessEqual, 0 );
+          // con_h.push_back( v_fc_ue, 1.0 );
+          // con_h.push_back( _createCorefVar(p_out_lp, p_out_lprel, p_out_cache, ti, tj), -1.0 );
+          // p_out_lp->addConstraint( con_h );
+          
+          // const vector<int> *p_nodes_ti, *p_nodes_tj;
+          // pg.getNode( &p_nodes_ti, tj ); pg.getNode( &p_nodes_tj, ti );
 
           // repeat( k, p_nodes_ti->size() ) {
-          //   repeat( l, p_nodes_tj->size() ) {
-          //     int ni = (*p_nodes_ti)[k], nj = (*p_nodes_tj)[l];
-          //     cerr << pg.nodes[ni].toString() << endl;
-          //     if( ObservableNode == pg.nodes[ ni ].type ) p_out_lprel->feature_vector[ v_fc_prior ][ "FC_UNIFY_PRIOR" + pg.nodes[ ni ].lit.toPredicateArity() ]  = -1;
-          //     if( ObservableNode == pg.nodes[ nj ].type ) p_out_lprel->feature_vector[ v_fc_prior ][ "FC_UNIFY_PRIOR" + pg.nodes[ nj ].lit.toPredicateArity() ]  = -1;
-          //     if( ObservableNode == pg.nodes[ ni ].type ) p_out_lprel->feature_vector[ v_fc_ue ][ "FC_UNIFY_EVIDENCE_" + pg.nodes[ ni ].lit.toPredicateArity() ]  = -1;
-          //     if( ObservableNode == pg.nodes[ nj ].type ) p_out_lprel->feature_vector[ v_fc_ue ][ "FC_UNIFY_EVIDENCE_" + pg.nodes[ nj ].lit.toPredicateArity() ]  = -1;
+          //   int  ni = (*p_nodes_ti)[k];
+          //   cerr << pg.nodes[ni].toString() << g_store.claim( tj ) << pg.nodes[ni].type << endl;
+          //   if( ObservableNode == pg.nodes[ ni ].type ) { cerr << "yyyy" << endl; }
+          //     repeat( l, p_nodes_tj->size() ) {
+          //     int nj = (*p_nodes_tj)[l];
+          //     // if( ObservableNode == pg.nodes[ ni ].type ) p_out_lprel->feature_vector[ v_fc_prior ][ "FC_UNIFY_PRIOR" + pg.nodes[ ni ].lit.toPredicateArity() ]  = -1;
+          //     // if( ObservableNode == pg.nodes[ nj ].type ) p_out_lprel->feature_vector[ v_fc_prior ][ "FC_UNIFY_PRIOR" + pg.nodes[ nj ].lit.toPredicateArity() ]  = -1;
+          //     if( ObservableNode == pg.nodes[ ni ].type ) p_out_lprel->feature_vector[ v_fc_ue ][ "FC_UNIFY_FOUND_EVD_FOR_" + pg.nodes[ ni ].lit.toPredicateArity() ]  = 1;
+          //     if( ObservableNode == pg.nodes[ nj ].type ) p_out_lprel->feature_vector[ v_fc_ue ][ "FC_UNIFY_FOUND_EVD_FOR_" + pg.nodes[ nj ].lit.toPredicateArity() ]  = 1;
           //   } }
 
         }
@@ -757,6 +781,8 @@ bool function::compileKB( knowledge_base_t *p_out_kb, const precompiled_kb_t &pc
     p_out_kb->axioms.push_back( pa2axioms[ p_out_kb->keys[i] ] );
   }
 
+  p_out_kb->da.clear();
+  
   /* Write the hash table. */
   if( 0 != p_out_kb->da.build( da_keys.size(), &da_keys[0], 0, &da_vals[0] ) ) return false;
 

@@ -80,7 +80,7 @@ void algorithm::infer( logical_function_t *p_out_best_h, sparse_vector_t *p_out_
     foreachc( pairwise_vars_t, iter_t1, p_out_cache->lprel.pp2v )
       for( unordered_map<store_item_t, int>::const_iterator iter_t2=iter_t1->second.begin(); iter_t1->second.end()!=iter_t2; ++iter_t2 ) {
         if( 0.5 < p_out_cache->lp.variables[ iter_t2->second ].optimized )
-          p_out_cache->lp.optimized_obj -= -0.00001;
+          p_out_cache->lp.optimized_obj -= -0.0001;
       }
 
   } else p_out_cache->lp.sol_type = NotAvailable;
@@ -252,10 +252,6 @@ void algorithm::learn( score_function_t *p_out_sfunc, const learn_configuration_
       
       total_updates += fabs(tau);
 
-      function::beginXMLtag( "model" );
-
-      cout << "(model ";
-
       ostringstream log_weight_updates;
       
       for( unordered_set<string>::iterator iter_fi = feature_indices.begin(); feature_indices.end() != iter_fi; ++iter_fi ) {
@@ -268,12 +264,15 @@ void algorithm::learn( score_function_t *p_out_sfunc, const learn_configuration_
           p_out_sfunc->weights[j] += tau * (v_correct[j] - v_current[j]);
 
         }
-
-        if( 0 != p_out_sfunc->weights[j] )
-          cout << "(weight \""<< j <<"\" "<< p_out_sfunc->weights[j] << ") ";
         
       }
 
+      function::beginXMLtag( "model" );
+
+      cout << "(model ";
+      for( weight_vector_t::iterator iter_fi = p_out_sfunc->weights.begin(); p_out_sfunc->weights.end() != iter_fi; ++iter_fi ) {
+        if( 0.0 != iter_fi->second ) cout << "(weight \"" << iter_fi->first << "\" " << iter_fi->second << ") ";
+      }
       cout << ")" << endl;
 
       cerr << log_weight_updates.str() << endl;

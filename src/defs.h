@@ -226,7 +226,10 @@ struct external_module_t {
   inline bool initialize( const string &filename ) {
     Py_Initialize();
     PyObject *p_pyname = PyFile_FromString( (char *)filename.c_str(), "r" );
-    if( NULL == p_pyname ) return false;
+    if( NULL == p_pyname ) {
+      throw "External module " + filename + " cannot be found.";
+      return false;
+    }
 
     PyRun_SimpleFile( PyFile_AsFile( p_pyname ), (char *)filename.c_str() );
     Py_DECREF( p_pyname );

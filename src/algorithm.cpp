@@ -320,7 +320,7 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
   }
 
   unordered_map<string, int> confusion_matrix;
-  bool                       f_classified = false, f_structured = false, f_kb_modified = false;
+  bool                       f_classified = false, f_structured = false, f_kb_modified = false, f_p_found = false;
     
   for( uint_t a=0; a<args.size(); a++ ) {
   
@@ -333,7 +333,7 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
       p_is = &file;
 
       if( file.fail() ) {
-        cerr << "File not found: " << args[a] << endl;
+        E( "File not found: " << args[a] );
         break;
       }
       
@@ -416,6 +416,7 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
         if( has_key( cmd, 'p' ) ) {
           if( -1 == i_name ) continue;
           if( sr.stack.children[i_name]->children[1]->getString() != cmd[ 'p' ] ) continue;
+          f_p_found = true;
         }
 
         /* Learn or infer. */
@@ -509,6 +510,8 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
          << "</performance>" << endl;
   }
 
+  if( has_key( cmd, 'p' ) && !f_p_found ) E( "Problem not found:" << cmd['p'] );
+  
   return true;
   
 }
@@ -541,7 +544,7 @@ bool _moduleProcessInferOptions( inference_configuration_t *p_out_con, command_o
   p_out_con->nbthreads             = atof( cmd[ 't' ].c_str() );
   p_out_con->extension_module      = cmd[ 'e' ];
 
-  if( has_key( cmd, 'e' ) ) g_ext.initialize( p_out_con->extension_module );
+  if( has_key( cmd, 'e' ) ) g_ext.initialize( p_out_con->extension_module, cmd[ 'f' ] );
 
   if( "ls" == cmd['i'] )  p_out_con->method       = LocalSearch;
   else if( "rlp" == cmd['i'] )  p_out_con->method = RoundLP;
@@ -632,7 +635,7 @@ int main( int argc, char **pp_args ) {
 
   command_option_t cmd;
   vector<string>   args;
-  function::getParsedOption( &cmd, &args, "m:v:i:b:C:N:t:T:w:E:O:o:p:d:c:e:", argc, pp_args );
+  function::getParsedOption( &cmd, &args, "m:v:i:b:C:N:t:T:w:E:O:o:p:d:c:e:f:", argc, pp_args );
 
   if( !has_key( cmd, 'm' ) ) { cerr << str_usage << endl; return 1; }
   

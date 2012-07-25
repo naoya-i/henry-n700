@@ -16,6 +16,7 @@
 
 #include <sys/time.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <signal.h>
 
 #include "darts.h"
@@ -40,6 +41,7 @@
 
 #define _SC(x) g_store.claim(x)
 #define V(x) if( g_verbose_level >= x )
+#define E(x) cerr << "\33[0;41m * ERROR * \33[0m" << x << endl;
 
 #define foreach(T, i, v) for( T::iterator i = (v).begin(); (v).end() != i; ++i )
 #define foreachc(T, i, v) for( T::const_iterator i = (v).begin(); (v).end() != i; ++i )
@@ -222,21 +224,46 @@ struct external_module_t {
   PyObject *p_pyglobal;
 
   inline external_module_t() : p_pyglobal(NULL) {}
+
+  static inline PyObject *cppPrint(PyObject *self, PyObject *args){
+    char* value;
+    // Grab string ("s") from python arguments
+    PyArg_ParseTuple(args, "s", &value);
+    // Use value obtained from python function call
+    cout << value << endl;
+    // Return Py_None (python requires us to return something)
+    Py_INCREF(Py_None);
+    return Py_None;
+  }
+
+  inline bool initialize( const string &filename, const string &args ) {
+    static PyMethodDef p_pyhenryext[] = {                         \
+      {"cppPrint", cppPrint, METH_VARARGS, "cppPrint(string)\n"}, \
+      {NULL, NULL, 0, NULL}                                       \
+    };
   
-  inline bool initialize( const string &filename ) {
     Py_Initialize();
+    Py_InitModule( "henryext", p_pyhenryext );
+    
     PyObject *p_pyname = PyFile_FromString( (char *)filename.c_str(), "r" );
     if( NULL == p_pyname ) {
-      throw "External module " + filename + " cannot be found.";
+      E( "External module " << filename << " cannot be found." );
+      throw;
       return false;
     }
 
+    PyRun_SimpleString( ("_args = '" + args + "'").c_str() );
     PyRun_SimpleFile( PyFile_AsFile( p_pyname ), (char *)filename.c_str() );
     Py_DECREF( p_pyname );
 
     p_pyname   = PyString_FromString("__main__");
     p_pyglobal = PyImport_Import( p_pyname );
 
+    /* Set given arguments. */
+    /* PyObject *pydict = PyModule_GetDict( p_pyglobal ); */
+    /* PyDict_SetItemString( pydict, "test", PyString_FromString("baaaa") ); */
+    /* Py_DECREF( pydict ); */
+    
     Py_DECREF( p_pyname );
 
     return true;

@@ -306,13 +306,13 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
     repeat( j, pg.nodes[i].lit.terms.size() ) logical_terms.insert( pg.nodes[i].lit.terms[j] );
     
     // /* Factor: prior. */
-    // if( g_f_weighted_abduction ? ObservableNode == pg.nodes[i].type : LabelNode != pg.nodes[i].type ) {
-    //   factor_t fc_prior( IdenticalFactorTrigger );
-    //   fc_prior.push_back( _createNodeVar( p_out_lp, p_out_lprel, pg, i ) );
+    if( g_f_weighted_abduction ? ObservableNode == pg.nodes[i].type : LabelNode != pg.nodes[i].type ) {
+      factor_t fc_prior( IdenticalFactorTrigger );
+      fc_prior.push_back( _createNodeVar( p_out_lp, p_out_lprel, pg, i ) );
 
-    //   int v_fc_prior = fc_prior.apply( p_out_lp, "fc_prior_" + pg.nodes[i].toString() );
-    //   p_out_lprel->feature_vector[ v_fc_prior ][ "FC_PRIOR_" + pg.nodes[i].lit.toPredicateArity() ] = g_f_weighted_abduction ? -pg.nodes[i].lit.wa_number : -1;
-    // }
+      int v_fc_prior = fc_prior.apply( p_out_lp, "fc_prior_" + pg.nodes[i].toString() );
+      p_out_lprel->feature_vector[ v_fc_prior ][ "FC_PRIOR_" + pg.nodes[i].lit.toPredicateArity() ] = g_f_weighted_abduction ? -pg.nodes[i].lit.wa_number : -1;
+    }
     
     /* Factor: explained. */
     factor_t fc_explained( OrFactorTrigger );
@@ -336,7 +336,7 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
         con_expimp.push_back( _createNodeVar( p_out_lp, p_out_lprel, pg, pg.hypernodes[ iter_eg->second[j] ][0] ), -1.0 );
         
         int v_fc = fc_assume.apply( p_out_lp, "fc_a_" + ::toString(iter_eg->second[j], "%d") );
-        p_out_lprel->feature_vector[ v_fc ]["FC_A_" + pg.getEdgeName( i, iter_eg->second[j] ) ] = g_f_weighted_abduction ? -wa_conj_costs : -1.5;
+        p_out_lprel->feature_vector[ v_fc ]["FC_A_" + pg.getEdgeName( i, iter_eg->second[j] ) ] = g_f_weighted_abduction ? -wa_conj_costs : -1;
       }
     }
 
@@ -402,14 +402,14 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
 
       if( NULL == pyret ) continue;
       
-      /* pyret must be [(0.1, [1, 3, 5]), (1.2, [4, 5, 6]), ...]*/
+      /* pyret must be [(0.1, "", [1,3,5]), (...), ...] */
       bool f_including_label = false;
       
       repeat( k, PyList_Size(pyret) ) {
         if( c.isTimeout() ) return false;
 
         /* Enumerate evidential literals. */
-        PyObject    *pytuple = PyList_GetItem( pyret, k ), *pylist = PyTuple_GetItem( pytuple, 1 );
+        PyObject    *pytuple = PyList_GetItem( pyret, k ), *pylist = PyTuple_GetItem( pytuple, 2 );
         double       score   = PyFloat_AsDouble( PyTuple_GetItem( pytuple, 0 ) );
         vector<int>  evidential_literals;
         string       signature = "";
@@ -439,7 +439,7 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
             int v_fc_ue = fc_unif.apply( p_out_lp, (f_is_illusion ? "fc_u_g_" : "fc_ue_") + g_store.claim(ti) +","+ g_store.claim(tj) +","+ signature );
             
             if( f_is_illusion ) p_out_lp->variables[ v_fc_ue ].obj_val = 9999;
-            else                p_out_lprel->feature_vector[ v_fc_ue ][ "FC_UNIFY_EVIDENCE_" + g_store.claim( pg.nodes[evidential_literals[0]].lit.predicate ) ] = score;
+            else                p_out_lprel->feature_vector[ v_fc_ue ][ "FC_UNIFY_EVIDENCE_" + string(PyString_AsString( PyTuple_GetItem( pytuple, 1 ) )) ] = score;
 
           } else {
             factor_t fc_unif( AndFactorTrigger );
@@ -483,7 +483,7 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
           // if( !f_including_label )
           //   p_out_lprel->feature_vector[ v_fc_ue ][ "FC_UNIFY_FOUND_EVD" ] = 1.0;
           // else
-          //   p_out_lp->variables[ v_fc_ue ].obj_val = 9999.0;
+          //   p_out_lp->variables[ v_fc_ue ].obj_val = 1.0;
           
           // /* Factor: new assumption. */
           // if( f_including_label ) {

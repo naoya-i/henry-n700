@@ -1,7 +1,9 @@
 #pragma once
 
 #define USE_GUROBI
-//#define USE_LOCALSOLVER
+#define USE_LOCALSOLVER
+
+#include <sqlite3.h>
 
 #include <vector>
 #include <deque>
@@ -34,8 +36,10 @@
 
 #define FnTrainingLabel "label"
 
-#define InvalidCutoff -9999.0
+#define InvalidCutoff     -9999.0
 #define InvalidFixedValue -9999.0
+
+#define MaxArguments 6
 
 #define PredicateSubstitution "="
 
@@ -51,9 +55,10 @@
 using namespace std;
 using namespace std::tr1;
 
-extern int           g_verbose_level;
+extern int            g_verbose_level;
 extern deque<void(*)(int)> g_exit_callbacks;
-extern deque<string> g_xml_stack;
+extern deque<string>  g_xml_stack;
+extern ostream       *g_p_out;
 
 /* Usage! */
 static const char *str_usage = 
@@ -212,7 +217,7 @@ struct store_t {
   }
   
   inline string claim( store_item_t i ) const { return 0 <= i && i < items.size() ? items[ i ] : ""; }
-  inline bool isConstant( store_item_t i ) const { char c = items[i][0]; return ('0' <= c && c <= '9') || ('A' <= c && c <= 'Z'); }
+  inline bool isConstant( store_item_t i ) const { char c = items[i][0]; return ('A' <= c && c <= 'Z'); }
   inline bool isUnknown( store_item_t i ) const { return '_' == items[i][0]; };
   inline bool isEqual( store_item_t i, const string &val ) { return val == items[ i ]; }
   inline bool isNegative( store_item_t i ) const { return '-' == items[i][0]; }
@@ -225,21 +230,46 @@ struct external_module_t {
 
   inline external_module_t() : p_pyglobal(NULL) {}
 
-  static inline PyObject *cppPrint(PyObject *self, PyObject *args){
-    char* value;
-    // Grab string ("s") from python arguments
-    PyArg_ParseTuple(args, "s", &value);
-    // Use value obtained from python function call
-    cout << value << endl;
-    // Return Py_None (python requires us to return something)
-    Py_INCREF(Py_None);
-    return Py_None;
+  static sqlite3 *p_db_pehypotheses;
+  static inline PyObject *getPotentialElementalHypotheses( PyObject *self, PyObject *args ) {
+    if( NULL == p_db_pehypotheses ) E( "In-memory database is not available." );
+
+    char *p_query;
+    PyArg_ParseTuple(args, "s", &p_query); 
+    
+    sqlite3_stmt *p_stmt;
+    PyObject *p_pylist = PyList_New(0);
+
+    if( SQLITE_OK != sqlite3_prepare_v2(p_db_pehypotheses, p_query, -1, &p_stmt, 0) ) { E( "Invalid query: " << p_query ); }
+    else {
+      int num_cols = sqlite3_column_count(p_stmt);
+      
+      if( num_cols ) {
+        while( SQLITE_ROW == sqlite3_step(p_stmt) ) {
+          PyObject *p_pytuple = PyTuple_New(num_cols);
+          
+          repeat( i, num_cols ) {
+            char *ptr = (char *)sqlite3_column_text(p_stmt, i);
+            
+            if( 0 != ptr ) PyTuple_SetItem( p_pytuple, i, PyString_FromString(ptr) );
+            else           PyTuple_SetItem( p_pytuple, i, PyString_FromString("") );
+          }
+          
+          PyList_Append( p_pylist, p_pytuple );
+        }
+      }
+    }
+    
+    sqlite3_finalize(p_stmt);
+
+    return p_pylist;
+    
   }
 
   inline bool initialize( const string &filename, const string &args ) {
-    static PyMethodDef p_pyhenryext[] = {                         \
-      {"cppPrint", cppPrint, METH_VARARGS, "cppPrint(string)\n"}, \
-      {NULL, NULL, 0, NULL}                                       \
+    static PyMethodDef p_pyhenryext[] = {
+      {"getPotentialElementalHypotheses", getPotentialElementalHypotheses, METH_VARARGS, "getPotentialElementalHypotheses(string)\n"},
+      {NULL, NULL, 0, NULL}
     };
   
     Py_Initialize();
@@ -258,11 +288,6 @@ struct external_module_t {
 
     p_pyname   = PyString_FromString("__main__");
     p_pyglobal = PyImport_Import( p_pyname );
-
-    /* Set given arguments. */
-    /* PyObject *pydict = PyModule_GetDict( p_pyglobal ); */
-    /* PyDict_SetItemString( pydict, "test", PyString_FromString("baaaa") ); */
-    /* Py_DECREF( pydict ); */
     
     Py_DECREF( p_pyname );
 
@@ -280,15 +305,17 @@ struct external_module_t {
     
     PyObject *p_pyret, *p_pyfunc = PyObject_GetAttrString( p_pyglobal, function_name.c_str() );
     
-    if( NULL != p_pyfunc && PyCallable_Check(p_pyfunc) )
+    if( NULL != p_pyfunc && PyCallable_Check(p_pyfunc) ) {
       p_pyret = PyEval_CallObject(p_pyfunc, p_args);
 
-    if( NULL == p_pyret ) {
-      cerr << "An error occurred in the external module!" << endl;
-      if( PyErr_Occurred() ) PyErr_Print();
-    }
-    
-    Py_DECREF( p_pyfunc );
+      if( NULL == p_pyret ) {
+        E( "An error occurred in the external module!" );
+        if( PyErr_Occurred() ) PyErr_Print();
+      }
+      
+      Py_DECREF( p_pyfunc );
+    } else
+      E( "Function is not callable: " << function_name );
 
     return p_pyret;
   }
@@ -421,7 +448,11 @@ struct literal_t {
 
   inline string toString() const { string exp; _print( &exp ); return exp; }
   inline string toPredicateArity() const { char buffer[1024]; sprintf( buffer, "%s/%d", g_store.claim( predicate ).c_str(), (int)terms.size() ); return string( buffer ); }
-  
+  inline string toSQL() const {
+    vector<string> args; repeat( i, terms.size() ) args.push_back( "'"+g_store.claim(terms[i])+"'" );
+    repeat( i, MaxArguments - terms.size() ) args.push_back( "NULL" );
+    return "'"+ g_store.claim(predicate) +"',"+::join( args.begin(), args.end(), "," );
+  }
 };
 
 struct unifier_t {
@@ -681,6 +712,8 @@ struct linear_programming_problem_t {
   double                  optimized_obj, cutoff;
   ilp_solution_type_t     sol_type;
 
+  vector<double> best_solution_stack, second_best_solution_stack;
+  
   inline linear_programming_problem_t() : cutoff(InvalidCutoff) {}
   
   inline int addVariable( const lp_variable_t &var ) { variables.push_back( var ); return variables.size()-1; }
@@ -934,12 +967,13 @@ typedef double (*sf_edge_t)(const proof_graph_t &gp, int i, const vector<int> &j
 
 struct score_function_t {
 
+  sexp_stack_t    func_temp;
   weight_vector_t weights;
 
-  void featureFunctionLiteral( sparse_vector_t *p_out_v, const proof_graph_t &pg, int i );
-  void featureFunctionAxiom( sparse_vector_t *p_out_v, const proof_graph_t &pg, int i, pg_hypernode_t j );
-  bool featureFunctionUnify( sparse_vector_t *p_out_v, const proof_graph_t &pg, const knowledge_base_t &kb, int i, int j, int p_t1, int p_t2 );
-
+  inline void setFunctionTemplate( sexp_stack_t &func_temp ) {
+    func_temp = func_temp;
+  }
+  
   double getScore( const sparse_vector_t &v_feature, bool f_ignore_weight = false ) {
     double s = 0;
 
@@ -1026,6 +1060,7 @@ struct inference_configuration_t {
   double                         timelimit, nbthreads, timestart;
   uint_t                         depthlimit, max_variable_clusters;
   inference_method_t             method;
+  uint_t                         k_best;
   objective_function_t           objfunc;
   training_data_t                training_instance;
   unordered_map<string, double>  sol_cache;
@@ -1037,7 +1072,7 @@ struct inference_configuration_t {
   
   inline inference_configuration_t( score_function_t &s ) :
     ilp(false), proofgraph(false), ignore_weight(false), use_cache(false), is_ilp_verbose(false), show_variable_cluster(false),
-    show_statistics(false),
+    show_statistics(false), k_best(1),
     loss(1.0), p_sfunc( &s ), initial_label_index(99999),
     method(LocalSearch), objfunc(Cost), nbthreads(8),
     cpi_max_iteration(9999), cpi_timelimit(9999)
@@ -1110,7 +1145,7 @@ struct lp_inference_cache_t {
   }
 
   inline void printStatistics() const {
-    cout << "<statistics>" << endl
+    (*g_p_out) << "<statistics>" << endl
          << "<time total=\""<< (elapsed_prepare+elapsed_ilp) <<"\" prepare=\"" << elapsed_prepare << "\" ilp=\"" << elapsed_ilp << "\" />"<< endl
          << "<ilp solution=\""<< toString(lp.sol_type) <<"\" variables=\"" << lp.variables.size() << "\" constraints=\"" << lp.constraints.size() << "\" />"<< endl
          << "<search-space literals=\""<< pg.nodes.size() <<"\" axiom=\""<< pg.instantiated_axioms.size() <<"\" />"<< endl
@@ -1148,12 +1183,12 @@ namespace function {
   inline bool isSexpSep( char c ) { return '(' == c || ')' == c || '"' == c || '\'' == c || ' ' == c || '\t' == c || '\n' == c || '\r' == c; };
 
   inline void beginXMLtag( const string &tag, const string &parameters = "" ) {
-    cout << "<" << tag << ("" != parameters ? (" " + parameters) : "") << ">" << endl;
+    (*g_p_out) << "<" << tag << ("" != parameters ? (" " + parameters) : "") << ">" << endl;
     g_xml_stack.push_front( tag );
   }
 
   inline void endXMLtag( const string &tag ) {
-    cout << "</" << tag << ">" << endl;
+    (*g_p_out) << "</" << tag << ">" << endl;
     g_xml_stack.pop_front();
   }
   
@@ -1224,7 +1259,7 @@ namespace function {
 
     /* Close the XML tag. */
     for( int i=0; i<g_xml_stack.size(); i++ )
-      cout << "</" << g_xml_stack[i] << ">" << endl;
+      (*g_p_out) << "</" << g_xml_stack[i] << ">" << endl;
   
     signal( SIGINT, catch_int );
     exit(0);

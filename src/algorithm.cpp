@@ -12,12 +12,17 @@
 
 #include <tr1/unordered_set>
 
-
-external_module_t g_ext;
-store_t           g_store;
-int               g_verbose_level = 0;
+/* Instances. */
+ofstream           g_out_file;
+ostream           *g_p_out = &cout;
+external_module_t  g_ext;
+store_t            g_store;
+int                g_verbose_level = 0;
 deque<void(*)(int)> g_exit_callbacks;
-deque<string>     g_xml_stack;
+deque<string>      g_xml_stack;
+
+sqlite3 *external_module_t::p_db_pehypotheses;
+
 
 void algorithm::infer( logical_function_t *p_out_best_h, sparse_vector_t *p_out_fv, lp_inference_cache_t *p_out_cache, lp_inference_cache_t *p_old_cache, inference_configuration_t& c, const logical_function_t &obs, const string &sexp_obs, const knowledge_base_t& kb ) {
 
@@ -58,7 +63,7 @@ void algorithm::infer( logical_function_t *p_out_best_h, sparse_vector_t *p_out_
   
   p_out_cache->elapsed_prepare = getTimeofDaySec() - p_out_cache->elapsed_prepare;
 
-  if( c.ilp ) cout << p_out_cache->lp.toString() << endl;
+  if( c.ilp ) (*g_p_out) << p_out_cache->lp.toString() << endl;
   
   if( p_out_cache->elapsed_prepare < c.timelimit ) {
     V(1) cerr << "Start inference with " << (BnB == c.method ? "BnB" : (c.method == CuttingPlaneBnB ? "BnB (with CPI)" : "LocalSearch")) << "..." << endl;
@@ -75,7 +80,7 @@ void algorithm::infer( logical_function_t *p_out_best_h, sparse_vector_t *p_out_
     default: break;
     };
   
-    if( c.ilp ) cout << p_out_cache->lp.solutionToString() << endl;
+    if( c.ilp ) (*g_p_out) << p_out_cache->lp.solutionToString() << endl;
     
     foreachc( pairwise_vars_t, iter_t1, p_out_cache->lprel.pp2v )
       for( unordered_map<store_item_t, int>::const_iterator iter_t2=iter_t1->second.begin(); iter_t1->second.end()!=iter_t2; ++iter_t2 ) {
@@ -148,7 +153,7 @@ void algorithm::learn( score_function_t *p_out_sfunc, const learn_configuration_
 
       if( NotAvailable == cache.lp.sol_type ) {
         V(2) cerr << log_head << "Result of inference is not available." << endl;
-        cout << "<update loss=\""+ toString( cache.loss.loss, "%f" ) +"\" coefficient=\"-\" />" << endl; function::endXMLtag( "training" );
+        (*g_p_out) << "<update loss=\""+ toString( cache.loss.loss, "%f" ) +"\" coefficient=\"-\" />" << endl; function::endXMLtag( "training" );
         continue;
       }
 
@@ -158,7 +163,7 @@ void algorithm::learn( score_function_t *p_out_sfunc, const learn_configuration_
       
       ci.sol_cache         = sol_cache[i];
         
-      if( cache.loss.minimum_loss == cache.loss.loss ) { cout << "<update loss=\"0\" coefficient=\"0\" />" << endl; function::endXMLtag( "training" ); continue; }
+      if( cache.loss.minimum_loss == cache.loss.loss ) { (*g_p_out) << "<update loss=\"0\" coefficient=\"0\" />" << endl; function::endXMLtag( "training" ); continue; }
 
       if( Structure == t[i].type_output ) {
 
@@ -203,7 +208,7 @@ void algorithm::learn( score_function_t *p_out_sfunc, const learn_configuration_
         //if( s_current < s_correct ) {
         if( Optimal != another_cache.lp.sol_type ) {
           V(2) cerr << log_head << "Could not find good completion." << endl;
-          cout << "<update loss=\""+ toString( cache.loss.loss, "%f" ) +"\" coefficient=\"-\" />" << endl; function::endXMLtag( "training" );
+          (*g_p_out) << "<update loss=\""+ toString( cache.loss.loss, "%f" ) +"\" coefficient=\"-\" />" << endl; function::endXMLtag( "training" );
           continue;
         }
         
@@ -238,16 +243,16 @@ void algorithm::learn( score_function_t *p_out_sfunc, const learn_configuration_
 
       function::beginXMLtag( "feature-vector", "" );
       foreach( unordered_set<string>, iter_fi, feature_indices )
-        cout << "<update element=\""<< *iter_fi <<"\" log=\""<< (v_current[*iter_fi] != v_correct[*iter_fi] ? ::toString( 1+num_diff[*iter_fi]++, "*%d " ) : "") <<"\">"
+        (*g_p_out) << "<update element=\""<< *iter_fi <<"\" log=\""<< (v_current[*iter_fi] != v_correct[*iter_fi] ? ::toString( 1+num_diff[*iter_fi]++, "*%d " ) : "") <<"\">"
              << v_current[*iter_fi] << " -> " << v_correct[*iter_fi] << "</update>" << endl;
       function::endXMLtag( "feature-vector" );      
       
-      if( 0.0 == tau ) { cout << "<update loss=\"0\" coefficient=\""+ toString( cache.loss.loss, "%f" ) +"\" />" << endl; function::endXMLtag( "training" ); continue; }
+      if( 0.0 == tau ) { (*g_p_out) << "<update loss=\"0\" coefficient=\""+ toString( cache.loss.loss, "%f" ) +"\" />" << endl; function::endXMLtag( "training" ); continue; }
 
       function::beginXMLtag( "update", "loss=\""+ toString( cache.loss.loss, "%f" ) + "\" coefficient=\"" + ::toString( tau, "%f" ) + "\"" );
       
       function::beginXMLtag( "loss", "" );
-      cout << cache.loss.printVW() << endl;
+      (*g_p_out) << cache.loss.printVW() << endl;
       function::endXMLtag( "loss" );
       
       total_updates += fabs(tau);
@@ -269,11 +274,11 @@ void algorithm::learn( score_function_t *p_out_sfunc, const learn_configuration_
 
       function::beginXMLtag( "model" );
 
-      cout << "(model ";
+      (*g_p_out) << "(model ";
       for( weight_vector_t::iterator iter_fi = p_out_sfunc->weights.begin(); p_out_sfunc->weights.end() != iter_fi; ++iter_fi ) {
-        if( 0.0 != iter_fi->second ) cout << "(weight \"" << iter_fi->first << "\" " << iter_fi->second << ") ";
+        if( 0.0 != iter_fi->second ) (*g_p_out) << "(weight \"" << iter_fi->first << "\" " << iter_fi->second << ") ";
       }
-      cout << ")" << endl;
+      (*g_p_out) << ")" << endl;
 
       cerr << log_weight_updates.str() << endl;
 
@@ -376,13 +381,17 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
         }
       }
 
+      if( sr.stack.isFunctor( "score-function" ) )
+        p_out_sfunc->setFunctionTemplate( sr.stack );
+      
       if( sr.stack.isFunctor( "O" ) && NULL != p_out_ic ) {
+        
         /* Compile the knowledge base. */
         if( !has_key( cmd, 'b' ) && (f_kb_modified || 0 == p_out_kb->axioms.size() ) ) {
           f_kb_modified = false;
           
           if( !function::compileKB( p_out_kb, *p_out_pckb ) ) {
-            cerr << "ERROR: Knowledge compilation failed." << endl; continue;
+            E( "ERROR: Knowledge compilation failed." ); continue;
           }
         }
         
@@ -390,7 +399,7 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
           i_x    = sr.stack.findFunctorArgument( AndString ), i_y    = sr.stack.findFunctorArgument( FnTrainingLabel ),
           i_name = sr.stack.findFunctorArgument( "name" ),    i_cls  = -1, i_structure = -1;
 
-        if( -1 == i_x ) cerr << "Input not found." << endl;
+        if( -1 == i_x ) E( "Input not found." );
 
         logical_function_t obs( *sr.stack.children[i_x] );
         training_data_t    td;
@@ -433,7 +442,7 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
           lp_inference_cache_t cache( *p_out_ic );
           sparse_vector_t      v_current;
         
-          cout << "<result-inference target=\"" << (-1 != i_name ? sr.stack.children[i_name]->children[1]->getString() : "") << "\">" << endl;
+          (*g_p_out) << "<result-inference target=\"" << (-1 != i_name ? sr.stack.children[i_name]->children[1]->getString() : "") << "\">" << endl;
 
           p_out_ic->training_instance = td;
           
@@ -447,12 +456,12 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
           cache.printStatistics();
           if( p_out_ic->proofgraph ) cache.pg.printGraph( cache.lp, cache.lprel );
         
-          cout << "<observed size=\"" << literals_obs.size() << "\" domain_size=\"" << p_out_kb->constants.size() << "\">" << obs.toString() << "</observed>" << endl
+          (*g_p_out) << "<observed size=\"" << literals_obs.size() << "\" domain_size=\"" << p_out_kb->constants.size() << "\">" << obs.toString() << "</observed>" << endl
                << "<hypothesis score=\"" << cache.lp.optimized_obj << "\">" << best_h.toString() << "</hypothesis>" << endl
                << "<vector>" << function::toString(v_current) << "</vector>" << endl;
 
           if( p_out_ic->show_variable_cluster ) {
-            cout << "<variable-equivalence>" << endl;
+            (*g_p_out) << "<variable-equivalence>" << endl;
 
             unordered_map<int, unordered_set<store_item_t> > var_cluster;
             for( unordered_map<store_item_t, int>::iterator iter_vc2v=cache.lprel.vc2v.begin(); cache.lprel.vc2v.end()!=iter_vc2v; ++iter_vc2v ) {
@@ -460,9 +469,9 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
             }
         
             for( unordered_map<int, unordered_set<store_item_t> >::iterator iter_vc=var_cluster.begin(); var_cluster.end()!=iter_vc; ++iter_vc )
-              if( 0 != iter_vc->first ) cout << "<cluster id=\"" << iter_vc->first << "\">" << g_store.toString(iter_vc->second) << "</cluster>" << endl;
+              if( 0 != iter_vc->first ) (*g_p_out) << "<cluster id=\"" << iter_vc->first << "\">" << g_store.toString(iter_vc->second) << "</cluster>" << endl;
 
-            cout << "</variable-equivalence>" << endl;
+            (*g_p_out) << "</variable-equivalence>" << endl;
           }
 
           if( -1 != i_y ) {
@@ -470,7 +479,7 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
               confusion_matrix[ (cache.lp.optimized_obj >= 0 ? "+1" : "-1") + sr.stack.children[ i_y ]->children[ i_cls ]->children[1]->getString() ]++;
               f_classified = true;
               
-              cout << "<task-result"
+              (*g_p_out) << "<task-result"
                    << " predicted-class=\""<< (cache.lp.optimized_obj >= 0 ? "+1" : "-1") << "\""
                    << " gold-class=\""<< sr.stack.children[ i_y ]->children[ i_cls ]->children[1]->getString() << "\""
                    << " loss=\""<< cache.loss.loss <<"\" />" << endl;
@@ -478,13 +487,13 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
               confusion_matrix[ 0.0 == cache.loss.loss ? "+1" : "-1" ]++;
               f_structured = true;
               
-              cout << "<task-result"
+              (*g_p_out) << "<task-result"
                    << " gold-structure=\""<< logical_function_t( *sr.stack.children[ i_y ]->children[ i_structure ]->children[1] ).toString() << "\""
                    << " loss=\""<< cache.loss.loss <<"\" />" << endl;
             }
           }
           
-          cout << "</result-inference>" << endl;
+          (*g_p_out) << "</result-inference>" << endl;
 
         }
         
@@ -497,12 +506,12 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
   }
 
   if( f_structured ) {
-    cout << "<performance><accuracy>"<< 100.0*confusion_matrix["+1"]/(confusion_matrix["+1"]+confusion_matrix["-1"]) <<"</accuracy>"
+    (*g_p_out) << "<performance><accuracy>"<< 100.0*confusion_matrix["+1"]/(confusion_matrix["+1"]+confusion_matrix["-1"]) <<"</accuracy>"
          << "<correct>"<< confusion_matrix["+1"] <<"</correct><incorrect>"<< confusion_matrix["-1"] <<"</incorrect></performance>" << endl;
   }
   
   if( f_classified ) {
-    cout << "<performance>"
+    (*g_p_out) << "<performance>"
          << "<value system=\"+1\" gold=\"+1\">"<< confusion_matrix["+1+1"] <<"</value>" << endl
          << "<value system=\"+1\" gold=\"-1\">"<< confusion_matrix["+1-1"] <<"</value>" << endl
          << "<value system=\"-1\" gold=\"-1\">"<< confusion_matrix["-1-1"] <<"</value>" << endl
@@ -537,15 +546,17 @@ bool _moduleProcessInferOptions( inference_configuration_t *p_out_con, command_o
   if( !has_key( cmd, 't' ) ) cmd[ 't' ] = "1";
   if( !has_key( cmd, 'O' ) ) cmd[ 'O' ] = "";
   if( !has_key( cmd, 'i' ) ) cmd[ 'i' ] = "bnb";
+  if( !has_key( cmd, 'k' ) ) cmd[ 'k' ] = "1";
 
   p_out_con->max_variable_clusters = atoi( cmd[ 'c' ].c_str() );
   p_out_con->depthlimit            = atoi( cmd[ 'd' ].c_str() );
   p_out_con->timelimit             = atof( cmd[ 'T' ].c_str() );
   p_out_con->nbthreads             = atof( cmd[ 't' ].c_str() );
   p_out_con->extension_module      = cmd[ 'e' ];
+  p_out_con->k_best                = atoi(cmd[ 'k' ].c_str());
 
   if( has_key( cmd, 'e' ) ) g_ext.initialize( p_out_con->extension_module, cmd[ 'f' ] );
-
+    
   if( "ls" == cmd['i'] )  p_out_con->method       = LocalSearch;
   else if( "rlp" == cmd['i'] )  p_out_con->method = RoundLP;
   else if( "bnb" == cmd['i'] )  p_out_con->method = BnB;
@@ -610,13 +621,13 @@ bool _moduleLearn( command_option_t &cmd, vector<string> &args ) {
   
   algorithm::learn( &sfunc, c, t, kb );
 
-  cout << "<model>" << endl
+  (*g_p_out) << "<model>" << endl
        << "(model ";
   for( weight_vector_t::iterator iter_fi = sfunc.weights.begin(); sfunc.weights.end() != iter_fi; ++iter_fi ) {
-    if( 0.0 != iter_fi->second ) cout << "(weight \"" << iter_fi->first << "\" " << iter_fi->second << ") ";
+    if( 0.0 != iter_fi->second ) (*g_p_out) << "(weight \"" << iter_fi->first << "\" " << iter_fi->second << ") ";
   }
 
-  cout << ")" << endl
+  (*g_p_out) << ")" << endl
        << "</model>" << endl;
   
   return true;
@@ -635,13 +646,24 @@ int main( int argc, char **pp_args ) {
 
   command_option_t cmd;
   vector<string>   args;
-  function::getParsedOption( &cmd, &args, "m:v:i:b:C:N:t:T:w:E:O:o:p:d:c:e:f:", argc, pp_args );
+  function::getParsedOption( &cmd, &args, "m:v:i:b:C:N:t:T:w:E:O:o:p:d:c:e:f:k:", argc, pp_args );
 
   if( !has_key( cmd, 'm' ) ) { cerr << str_usage << endl; return 1; }
   
   bool ret = false;
-  
-  cout << "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>" << endl;
+
+  /* GLOBAL OPTION: -o */
+  if( has_key( cmd, 'o' ) && "compile_kb" != cmd['m'] ) {
+    g_out_file.open( cmd['o'].c_str() );
+    g_p_out = &g_out_file;
+
+    if( g_out_file.fail() ) {
+      E( "File not found: " << cmd['o'] );
+      return false;
+    }
+  }
+
+  (*g_p_out) << "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>" << endl;
 
   function::beginXMLtag( "henry-output", "parameter=\"" + exec_options + "\"" );
 
@@ -657,6 +679,8 @@ int main( int argc, char **pp_args ) {
 
   g_ext.finalize();
   function::endXMLtag( "henry-output" );
+
+  if( has_key( cmd, 'o' ) ) g_out_file.close();
   
   if( !ret ) { cerr << str_usage << endl; return 1; }
   

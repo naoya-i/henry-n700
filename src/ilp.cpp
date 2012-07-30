@@ -57,6 +57,14 @@ public:
     switch( where ) {
     case GRB_CB_MIPSOL: {
       double f_gap = (getDoubleInfo( GRB_CB_MIPSOL_OBJBND ) - getDoubleInfo( GRB_CB_MIPSOL_OBJ )) / getDoubleInfo( GRB_CB_MIPSOL_OBJ );
+
+      /* Push the solution to the stack. */
+      V(1) cerr << "New solution!" << endl;
+      m_lp.second_best_solution_stack = m_lp.best_solution_stack;
+      m_lp.best_solution_stack.clear();
+      repeat( i, m_lp.variables.size() ) m_lp.best_solution_stack.push_back( getSolution( m_varmap[i] ) );
+
+      if( CuttingPlaneBnB != m_conf.method ) break;
       
       num_evaluated++;
       V(1) cerr << "CPI: " << "I=" << num_evaluated << ": New solution! (Obj = "<< getDoubleInfo( GRB_CB_MIPSOL_OBJ ) <<"Gap = "<< f_gap <<")" << endl;
@@ -260,12 +268,9 @@ ilp_solution_type_t function::solveLP_BnB( linear_programming_problem_t *p_out_l
              );
   
   if( InvalidCutoff != p_out_lp->cutoff ) model.getEnv().set( GRB_DoubleParam_Cutoff, p_out_lp->cutoff );
-
-  if( CuttingPlaneBnB == c.method ) {
-    GRBEXECUTE(model.getEnv().set( GRB_IntParam_DualReductions, 0 );
-               model.setCallback( &cb )
-               );
-  }
+  if( CuttingPlaneBnB == c.method ) GRBEXECUTE(model.getEnv().set( GRB_IntParam_DualReductions, 0 ));
+                                               
+  GRBEXECUTE(model.setCallback( &cb ));
   
   if( c.is_ilp_verbose ) beginXMLtag( "ilp-log", "solver=\"gurobi\"" );
 
@@ -334,7 +339,30 @@ ilp_solution_type_t function::solveLP_BnB( linear_programming_problem_t *p_out_l
   /* Update the optimized value based on the solution of LP. */
   repeat( i, p_out_lp->variables.size() )
     p_out_lp->variables[i].optimized = var_map[i].get(GRB_DoubleAttr_X);
-    
+
+  /* Prohibit to get the optimal solution. */
+  // repeat( i, c.k_best ) {
+  //   GRBLinExpr expr;
+  //   int        num_nonzero = 0;
+
+  //   repeat( j, p_out_lp->variables.size() ) {
+  //     //expr += (1.0 == p_out_lp->variables[j].optimized ? -1.0 : 1.0) * var_map[j];
+  //     expr += p_out_lp->variables[j].obj_val * var_map[j];
+  //     if( 1.0 == p_out_lp->variables[j].optimized ) num_nonzero++;
+  //   }
+
+  //   //model.addConstr( expr <= p_out_lp->variables.size() * 1.0 - 1 - num_nonzero );
+  //   model.addConstr( expr <= model.get(GRB_DoubleAttr_ObjVal)-0.01 );
+  //   model.reset();
+
+  //   repeat( j, p_out_lp->variables.size() ) {
+  //     if( !p_out_lp->variables[j].isFixed() )
+  //       var_map[j].set( GRB_DoubleAttr_Start, p_out_lp->second_best_solution_stack[j] );
+  //   }
+  
+  //   model.optimize();
+  // }
+  
   p_out_lp->optimized_obj = model.get(GRB_DoubleAttr_ObjVal);
 
   return GRB_OPTIMAL == model.get(GRB_IntAttr_Status) ? Optimal : SubOptimal;
@@ -425,7 +453,7 @@ ilp_solution_type_t function::solveLP_LS( linear_programming_problem_t *p_out_lp
   }
 
   /* State a maximization objective. */
-  p_model->addObjective( p_cost, OD_Minimize );
+  p_model->addObjective( p_cost, OD_Maximize );
 
   /* Go to hell! */
   try {

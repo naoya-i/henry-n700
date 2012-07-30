@@ -297,11 +297,27 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
   sparse_vector_t v_inf, v_minf; v_inf[ "FIXED" ] = 9999.0; v_minf[ "FIXED" ] = -9999.0;
   unordered_set<store_item_t> logical_terms;
   
+  /* Create an in-memory database for potential elemental hypotheses. */
+  sqlite3 *p_db; sqlite3_open( ":memory:", &p_db );
+  external_module_t::p_db_pehypotheses = p_db;
+  
+  sqlite3_exec( p_db, "CREATE TABLE pehypothesis(id INTEGER PRIMARY KEY, explains INTEGER, predicate TEXT, arg1 TEXT, arg2 TEXT, arg3 TEXT, arg4 TEXT, arg5 TEXT, arg6 TEXT)", NULL, 0, NULL );
+  sqlite3_exec( p_db, "CREATE INDEX idxpehid ON pehypothesis(id)", NULL, 0, NULL );
+  sqlite3_exec( p_db, "CREATE INDEX idxpehexp ON pehypothesis(explains)", NULL, 0, NULL );
+  sqlite3_exec( p_db, "CREATE INDEX idxpehpred ON pehypothesis(predicate)", NULL, 0, NULL );
+  sqlite3_exec( p_db, "CREATE INDEX idxpeharg1 ON pehypothesis(arg1)", NULL, 0, NULL );
+  sqlite3_exec( p_db, "CREATE INDEX idxpeharg2 ON pehypothesis(arg2)", NULL, 0, NULL );
+  sqlite3_exec( p_db, "CREATE INDEX idxpeharg3 ON pehypothesis(arg3)", NULL, 0, NULL );
+  sqlite3_exec( p_db, "CREATE INDEX idxpeharg4 ON pehypothesis(arg4)", NULL, 0, NULL );
+  sqlite3_exec( p_db, "CREATE INDEX idxpeharg5 ON pehypothesis(arg5)", NULL, 0, NULL );
+  sqlite3_exec( p_db, "CREATE INDEX idxpeharg6 ON pehypothesis(arg6)", NULL, 0, NULL );
+  
   /* Start creating the feature... */
   p_out_lp->addVariable( lp_variable_t( "dummy" ) );
 
   /* Factor: new assumption factors and explained factors. */
   repeat( i, pg.nodes.size() ) {
+    sqlite3_exec( p_db, ("INSERT INTO pehypothesis VALUES ("+ ::toString(i, "%d") + "," + pg.nodes[i].lit.toSQL() +")").c_str(), NULL, 0, NULL );
 
     repeat( j, pg.nodes[i].lit.terms.size() ) logical_terms.insert( pg.nodes[i].lit.terms[j] );
     
@@ -374,6 +390,10 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
     
   }
 
+  sqlite3_exec( p_db, "VACUUM", NULL, 0, NULL );
+
+  g_ext.call( "cbScoreFunction", NULL );
+  
   PyObject *pymap = PyDict_New();
 
   foreachc( pg_term_map_t, iter_tm, pg.t2n ) {
@@ -399,7 +419,7 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
       
       /* Collecting the evidence. */
       PyObject *pyret = g_ext.call( "cbGetUnificationEvidence", Py_BuildValue( "ssO", g_store.claim(ti).c_str(), g_store.claim(tj).c_str(), pymap ) );
-
+      
       if( NULL == pyret ) continue;
       
       /* pyret must be [(0.1, "", [1,3,5]), (...), ...] */
@@ -480,10 +500,10 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
           con_expunf.push_back( v_fc_ue, 2.0 );
           p_out_lp->addConstraint( con_expunf );
 
-          // if( !f_including_label )
-          //   p_out_lprel->feature_vector[ v_fc_ue ][ "FC_UNIFY_FOUND_EVD" ] = 1.0;
-          // else
-          //   p_out_lp->variables[ v_fc_ue ].obj_val = 1.0;
+          if( !f_including_label )
+            p_out_lprel->feature_vector[ v_fc_ue ][ "FC_UNIFY_FOUND_EVD" ] = 1.0;
+          else
+            p_out_lp->variables[ v_fc_ue ].obj_val = 1.0;
           
           // /* Factor: new assumption. */
           // if( f_including_label ) {
@@ -521,6 +541,8 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
       
     } }
 
+  sqlite3_close( p_db );
+  
   Py_DECREF( pymap );
   
   /* Impose mutual exclusiveness over variable equaility relation. */
@@ -556,7 +578,7 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
       } }
   }
 
-  if( BnB == c.method ) {
+  if( BnB == c.method || LocalSearch == c.method ) {
     V(2) cerr << "enumerateP: Creating transitivity constraints..." << endl;
 
     for( variable_cluster_t::cluster_t::iterator iter_c2v=p_out_cache->evc.clusters.begin(); p_out_cache->evc.clusters.end()!=iter_c2v; ++iter_c2v ) {
@@ -1008,13 +1030,13 @@ double loss_t::_lossVariableWise( unordered_set<store_item_t> *p_out_rel_vars, c
 
 void proof_graph_t::printGraph( const linear_programming_problem_t &lpp, const lp_problem_mapping_t &lprel, const string& property ) const {
 
-  cout << "<proofgraph" << ("" != property ? (" " + property) : "") << ">" << endl;
+  (*g_p_out) << "<proofgraph" << ("" != property ? (" " + property) : "") << ">" << endl;
   
   for( uint_t i=0; i<nodes.size(); i++ ) {
     unordered_map<int, int>::const_iterator iter_v = lprel.n2v.find(i);
     if( lprel.n2v.end() == iter_v ) continue;
     
-    cout << "<literal id=\""<< i <<"\" type=\""<< nodes[i].type <<"\" active=\""<< (lpp.variables[ iter_v->second ].optimized < 0.5 ? "no" : "yes") <<"\">"
+    (*g_p_out) << "<literal id=\""<< i <<"\" type=\""<< nodes[i].type <<"\" active=\""<< (lpp.variables[ iter_v->second ].optimized < 0.5 ? "no" : "yes") <<"\">"
          << nodes[i].toString() << "</literal>" << endl;
 
     const vector<int> *p_unifiables;
@@ -1045,7 +1067,7 @@ void proof_graph_t::printGraph( const linear_programming_problem_t &lpp, const l
       f_fails |= lpp.variables[ iter_v->second ].optimized < 0.5;
       f_fails |= lpp.variables[ iter_vj->second ].optimized < 0.5;
 
-      cout << "<unification l1=\""<< i <<"\" l2=\""<< nj << "\" unifier=\""<< uni.toString() << "\" active=\""<< (lpp.variables[ iter_vj->second ].optimized > 0.5 && !f_fails ? "yes" : "no") << "\" />" << endl;
+      (*g_p_out) << "<unification l1=\""<< i <<"\" l2=\""<< nj << "\" unifier=\""<< uni.toString() << "\" active=\""<< (lpp.variables[ iter_vj->second ].optimized > 0.5 && !f_fails ? "yes" : "no") << "\" />" << endl;
     }
     
   }
@@ -1064,20 +1086,20 @@ void proof_graph_t::printGraph( const linear_programming_problem_t &lpp, const l
         if( 0.5 < lpp.variables[ iter_vt->second ].optimized ) n_active++;
       }
 
-      cout << "<explanation active=\""<< (0.5 < lpp.variables[ iter_v->second ].optimized && hypernodes[ iter_eg->second[i] ].size() == n_active ? "yes" : "no") <<"\" axiom=\"\">";
+      (*g_p_out) << "<explanation active=\""<< (0.5 < lpp.variables[ iter_v->second ].optimized && hypernodes[ iter_eg->second[i] ].size() == n_active ? "yes" : "no") <<"\" axiom=\"\">";
       
       for( uint_t j=0; j<hypernodes[ iter_eg->second[i] ].size(); j++ ) {
-        cout << hypernodes[ iter_eg->second[i] ][j];
-        if( j < hypernodes[ iter_eg->second[i] ].size()-1 ) cout << " ^ ";
+        (*g_p_out) << hypernodes[ iter_eg->second[i] ][j];
+        if( j < hypernodes[ iter_eg->second[i] ].size()-1 ) (*g_p_out) << " ^ ";
       }
 
-      cout << " => " << iter_eg->first << "</explanation>" << endl;
+      (*g_p_out) << " => " << iter_eg->first << "</explanation>" << endl;
       
     }
         
   }
 
-  cout << "</proofgraph>" << endl;
+  (*g_p_out) << "</proofgraph>" << endl;
   
 }
 
@@ -1085,12 +1107,13 @@ void proof_graph_t::printGraph( const linear_programming_problem_t &lpp, const l
 sexp_reader_t &sexp_reader_t::operator++() {
 
   bool f_comment = false;
-
+  char last_c    = 0;
+  
   while( m_stream.good() ) {
 
     char c = m_stream.get();
     
-    if( ';' == c ) { f_comment = true; continue; }
+    if( '\\' != last_c && ';' == c ) { f_comment = true; continue; }
     if( f_comment ) {
       if( '\n' == c ) f_comment = false;
       continue;
@@ -1120,7 +1143,7 @@ sexp_reader_t &sexp_reader_t::operator++() {
           m_stack[ m_stack.size()-2 ]->children.push_back( m_stack.back() ); m_stack.pop_back();
         }
       } else if( '\\' == c ) m_stack.back()->str += m_stream.get();
-      else m_stack.back()->str += c;
+      else if( ';' != c ) m_stack.back()->str += c;
       break; }
 
     case TupleStack: {
@@ -1131,9 +1154,12 @@ sexp_reader_t &sexp_reader_t::operator++() {
           m_stack[ m_stack.size()-2 ]->children.push_back( m_stack.back() ); m_stack.pop_back();
         }
         m_stream.unget();
-      } else m_stack.back()->children[0]->str += c;
+      } else if( '\\' == c ) m_stack.back()->children[0]->str += m_stream.get();
+      else m_stack.back()->children[0]->str += c;
       break; }
     }
+
+    last_c = c;
     
   }
 

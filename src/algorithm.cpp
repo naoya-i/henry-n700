@@ -6,6 +6,10 @@
 #include <string.h>
 #include <signal.h>
 
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+
 #include <fstream>
 #include <map>
 #include <algorithm>
@@ -14,31 +18,31 @@
 
 /* Instances. */
 ofstream           g_out_file;
-ostream           *g_p_out = &cout;
+ostream           *g_p_out         = &cout;
 external_module_t  g_ext;
 store_t            g_store;
 int                g_verbose_level = 0;
 deque<void(*)(int)> g_exit_callbacks;
 deque<string>      g_xml_stack;
+list<list<PyObject*> > mypyobject_t::trash_cans;
 
-sqlite3 *external_module_t::p_db_pehypotheses;
 
 
-void algorithm::infer( logical_function_t *p_out_best_h, sparse_vector_t *p_out_fv, lp_inference_cache_t *p_out_cache, lp_inference_cache_t *p_old_cache, inference_configuration_t& c, const logical_function_t &obs, const string &sexp_obs, const knowledge_base_t& kb ) {
+inference_result_t algorithm::infer( logical_function_t *p_out_best_h, sparse_vector_t *p_out_fv, lp_inference_cache_t *p_out_cache, lp_inference_cache_t *p_old_cache, inference_configuration_t& c, const logical_function_t &obs, const string &sexp_obs, const knowledge_base_t& kb, bool f_learning, const weight_vector_t &w, ostream *p_out ) {
 
+  inference_result_t ret = GenerationTimeout;
   p_out_cache->elapsed_prepare = getTimeofDaySec();
   c.timestart                  = getTimeofDaySec();
 
   if( !c.use_cache ) {
     
-    V(1) cerr << "Generating potential hypothesis graph..." << endl;
-    if( function::enumeratePotentialElementalHypotheses( &p_out_cache->pg, &p_out_cache->evc, obs, sexp_obs, kb, c ) ) {
-      V(1) cerr << "done." << endl;
+    V(1) cerr << TS() << "Generating potential hypothesis graph..." << endl;
+    p_out_cache->pg.initializeDatabase();
     
-      V(1) cerr << "Converting the graph to LP optimization problem..." << endl;
+    if( function::enumeratePotentialElementalHypotheses( &p_out_cache->pg, &p_out_cache->evc, obs, sexp_obs, kb, c ) ) {
+    
+      V(1) cerr << TS() << "Converting the graph to LP optimization problem..." << endl;
       if( function::convertToLP( &p_out_cache->lp, &p_out_cache->lprel, p_out_cache, kb, p_out_cache->pg, p_out_cache->evc, c ) ) {
-      
-        V(1) cerr << "done." << endl;
 
         unordered_map<string, int> name2index;
 
@@ -48,10 +52,12 @@ void algorithm::infer( logical_function_t *p_out_best_h, sparse_vector_t *p_out_
         for( unordered_map<string, double>::iterator iter_cache=c.sol_cache.begin(); c.sol_cache.end()!=iter_cache; ++iter_cache )
           p_out_cache->lp.variables[ name2index[ iter_cache->first ] ].setInitialValue( iter_cache->second );
       } else
-        V(1) cerr << "Timeout." << endl;
+        V(1) cerr << TS() << "Timeout." << endl;
 
     } else
-      V(1) cerr << "Timeout." << endl;
+      V(1) cerr << TS() << "Timeout." << endl;
+
+    p_out_cache->pg.cleanUpDatabase();
     
   } else {
     for( uint_t i=0; i<p_out_cache->lp.variables.size(); i++ )
@@ -66,8 +72,10 @@ void algorithm::infer( logical_function_t *p_out_best_h, sparse_vector_t *p_out_
   if( c.ilp ) (*g_p_out) << p_out_cache->lp.toString() << endl;
   
   if( p_out_cache->elapsed_prepare < c.timelimit ) {
-    V(1) cerr << "Start inference with " << (BnB == c.method ? "BnB" : (c.method == CuttingPlaneBnB ? "BnB (with CPI)" : "LocalSearch")) << "..." << endl;
-
+    ret = ILPTimeout;
+      
+    V(1) cerr << TS() << "Start inference with " << (BnB == c.method ? "BnB" : (c.method == CuttingPlaneBnB ? "BnB (with CPI)" : "LocalSearch")) << "..." << endl;
+    
     /* Reset the time. */
     c.timestart = getTimeofDaySec();
     
@@ -88,214 +96,395 @@ void algorithm::infer( logical_function_t *p_out_best_h, sparse_vector_t *p_out_
           p_out_cache->lp.optimized_obj -= -0.0001;
       }
 
+    if( p_out_cache->lp.sol_type == Optimal || p_out_cache->lp.sol_type == SubOptimal ) ret = Success;
+    
   } else p_out_cache->lp.sol_type = NotAvailable;
 
-  function::convertLPToHypothesis( p_out_best_h, p_out_fv, p_out_cache->lp, p_out_cache->lprel, p_out_cache->evc, p_out_cache->pg );
-  p_out_cache->loss.setLoss( c.training_instance, *p_out_best_h, p_out_cache->lp.optimized_obj );
+  sparse_vector_t fv;
+  function::convertLPToHypothesis( p_out_best_h, &fv, *p_out_cache );
+  p_out_cache->loss.setLoss( c.training_instance, *p_out_best_h, p_out_cache->lprel, p_out_cache->lp.optimized_obj );
+  p_out_cache->loss.minimum_loss = p_out_cache->loss.loss;
+
+  if( NULL != p_out_fv ) (*p_out_fv) = fv;
+
+  (*p_out) << "<observed size=\"" << obs.branches.size() << "\" domain_size=\"" << kb.constants.size() << "\">" << endl << obs.toString(c.isColoring()) << endl << "</observed>" << endl
+           << "<hypothesis score=\"" << p_out_cache->lp.optimized_obj << "\">" << endl << p_out_best_h->toString(c.isColoring()) << endl << "</hypothesis>" << endl
+           << "<vector score=\""<< score_function_t::getScore( w, fv ) <<"\">" << endl << function::toString(*p_out_fv, c.isColoring()) << endl << "</vector>" << endl;
+
+  if( string::npos != c.output_info.find(OutputInfoFactors) ) {
+    (*p_out) << "<score-function>" << endl;
+
+    repeat( i, p_out_cache->lp.variables.size() ) {
+      if(0 == p_out_cache->lp.variables[i].name.find("ufc_"))
+        cout << toString(string::npos != c.output_info.find("colored") ?
+                         "<factor name=\"\33[0;33m%s\33[0m\" value=\"\33[0;34m%f\33[0m\">%f</factor>" : "<factor name=\"%s\" value=\"%f\">%f</factor>",
+                         p_out_cache->lp.variables[i].name.c_str(), p_out_cache->lp.variables[i].obj_val, p_out_cache->lp.variables[i].optimized) << endl;
+    }
+    
+    (*p_out) << "</score-function>" << endl;
+  }
   
+  return ret;
 }
 
-void algorithm::learn( score_function_t *p_out_sfunc, const learn_configuration_t &c, const vector<training_data_t>& t, const knowledge_base_t& kb ) {
+void algorithm::learn( score_function_t *p_out_sfunc, const learn_configuration_t &c, vector<training_data_t>& t, const knowledge_base_t& kb ) {
 
   unordered_map<string, int> num_diff;
-  unordered_map<int, unordered_map<string, double> > sol_cache;
+  unordered_map<string, int> gave_up_in_generation;
   
-  for( int n=0; n<c.N; n++ ) {
+  repeat( n, c.N ) {
 
-    cerr << "Iteration: " << 1+n << endl;
-    function::beginXMLtag( "learn-process", "iteration=\"" + toString(1+n, "%d") +"\"" );
+    cerr << TS() << "Iteration: " << 1+n << endl;
+    function::beginXMLtag( "learn-process", "iteration=\"" + toString("%d", 1+n) +"\"" );
 
-    double total_updates = 0.0, total_loss = 0.0, minimum_loss = 0.0;
+    double total_updates = 0.0, total_loss = 0.0, total_minimum_loss = 0.0; 
+    g_store.cleanupUnknowns();
 
-    for( uint_t i=0; i<t.size(); i++ ) {
+    /* Shuffle the training set. */
+    random_shuffle( t.begin(), t.end() );
+    
+    /* Initialize the weights with the current weights. */
+    int           num_progress = 0;
+    int           num_actually_trained = 0;
+    pid_t         forked_pid, child_pid;
+    vector<pid_t> child_processes;
 
-      string log_head = "I=" + toString(n+1, "%d") + ": " + t[i].name + ": ";
-      
-      V(2)
-        cerr << log_head << "  Input:  " << t[i].x.toString() << endl
-             << log_head << "  Output: " << t[i].outputToString() << endl;
-      else
-        cerr << "." << endl;
+    repeat( s, c.S ) {
 
-      function::beginXMLtag( "training", "instance=\"" + t[i].name + "\"" );
+      forked_pid = fork();
 
-      /* I) Predict! */
-      function::beginXMLtag( "current-prediction", "" );
-      
-      /* arg max_{x_i, y^, h^}. */
-      inference_configuration_t ci = c.ci;
-      logical_function_t        h_current, h_correct;
-      sparse_vector_t           v_current, v_correct;
-      vector<const literal_t*>  y_literals;
-      lp_inference_cache_t      cache( ci );
-      double                    s_current, s_correct;
-
-      t[i].y_lf.getAllLiterals( &y_literals );
-      ci.training_instance = t[i];
-      ci.objfunc           = LossAugmented;
-      ci.sol_cache         = sol_cache[i];
-        
-      infer( &h_current, &v_current, &cache, NULL, ci, t[i].x, t[i].x_sexp, kb );
-      s_current     = cache.lp.optimized_obj;
-      total_loss   += cache.loss.loss;
-      minimum_loss += cache.loss.minimum_loss;
-
-      V(2) 
-        cerr << log_head << "H:     " << h_current.toString() << endl
-             << log_head << "C(H):  " << s_current << " + " << (cache.loss.maximum_loss - cache.loss.loss) << " == " << ci.p_sfunc->getScore( v_current ) << endl
-             << log_head << "Class: " << (s_current < 0 ? "-1" : "+1") << endl
-             << log_head << "Loss:  " << cache.loss.maximum_loss << " >= " << cache.loss.loss << " >= " << cache.loss.minimum_loss << endl;
-
-      cache.printStatistics();
-      if( ci.proofgraph ) cache.pg.printGraph( cache.lp, cache.lprel, "id=\"i"+ toString(1+n, "%d") +"pred\" type=\"Prediction\"" );
-      
-      function::endXMLtag( "current-prediction" );
-
-      if( NotAvailable == cache.lp.sol_type ) {
-        V(2) cerr << log_head << "Result of inference is not available." << endl;
-        (*g_p_out) << "<update loss=\""+ toString( cache.loss.loss, "%f" ) +"\" coefficient=\"-\" />" << endl; function::endXMLtag( "training" );
+      /* PARENT PROECSS JUST CREATES A CHILD PROCESS. */
+      if( 0 != forked_pid ) {
+        child_processes.push_back(forked_pid);
         continue;
       }
 
-      /* Caching the solution. */
-      repeat( j, cache.lp.variables.size() )
-        sol_cache[i][ cache.lp.variables[j].name ] = cache.lp.variables[j].optimized;
+      /* START TRAINING. */
+      child_pid = getpid();
+      cerr << TS() << "fork(): " << child_pid << " from " << getpid() << endl;
       
-      ci.sol_cache         = sol_cache[i];
+      repeat( i, t.size() ) {
+        if( s != i % c.S ) continue;
         
-      if( cache.loss.minimum_loss == cache.loss.loss ) { (*g_p_out) << "<update loss=\"0\" coefficient=\"0\" />" << endl; function::endXMLtag( "training" ); continue; }
-
-      if( Structure == t[i].type_output ) {
-
-        /* I-2) Hiden variable completion! */
+        stringstream ss;
+        unordered_map<int, unordered_map<string, double> > sol_cache;
         
-        /* arg max_{x_i, y_i, h} */
-        function::beginXMLtag( "hidden-variable-completion", "" );
-      
-        lp_inference_cache_t another_cache( ci );
-        ci.objfunc             = LabelGiven;
-        //ci.method              = BnB;
-        //ci.use_cache         = true;
-        ci.initial_label_index = t[i].x.branches.size();
+        num_progress++;
+        
+        string log_head = toString( "I=%d: S=%d/%d: P=%d/%d@%s (%.1f %%): ",  1+n, 1+s, c.S, 1+i, t.size(), t[i].name.c_str(), 100.0 * ((double)num_progress / t.size()) );
+        
+        cerr << endl;
+        _N( " * Target: " << t[i].name << " / I="<< 1+n <<" / S=" << 1+s );
 
-        logical_function_t       x_prime = t[i].x;
-      
-        for( uint_t j=0; j<y_literals.size(); j++ ) {
-          if( !g_store.isNegative( y_literals[j]->predicate ) ) { x_prime.branches.push_back( *y_literals[j] ); }
+        if( 1 == gave_up_in_generation[t[i].name] ) {
+          cerr << TS() << "Skipped because it failed in search space generation process before." << endl; continue;
         }
-      
-        infer( &h_correct, &v_correct, &another_cache, NULL, ci, x_prime, t[i].x_sexp, kb );
-        s_correct = another_cache.lp.optimized_obj;
-
-        for( uint_t j=0; j<another_cache.lp.variables.size(); j++ ) {
-          if( 0 == another_cache.lp.variables[j].name.find( "fc_u_g_" ) ) s_correct -= another_cache.lp.variables[j].obj_val * another_cache.lp.variables[j].optimized;
-        }
-
-        V(2)
-          cerr << log_head << "H':     " << h_correct.toString() << endl
-               << log_head << "C(H'):  " << s_correct << " == " << ci.p_sfunc->getScore( v_correct ) << endl
-               << log_head << "Loss:  " << another_cache.loss.maximum_loss << " >= " << another_cache.loss.loss << " >= " << another_cache.loss.minimum_loss << endl;
-
-        s_current = ci.p_sfunc->getScore( v_current );
-        s_correct = ci.p_sfunc->getScore( v_correct );
         
-        another_cache.printStatistics();
-        if( ci.proofgraph ) another_cache.pg.printGraph( another_cache.lp, another_cache.lprel, "id=\"i"+ toString(1+n, "%d") +"hvc\" type=\"HiddenVariableCompletion\"" );
+        _N( " * Current prediction" );
+      
+        function::beginXMLtag( "training", "instance=\"" + t[i].name + "\"", &ss );
 
-        function::endXMLtag( "hidden-variable-completion" );
+        /* I) Predict! */
+        function::beginXMLtag( "current-prediction", "", &ss );
+      
+        /* arg max_{x_i, y^, h^}. */
+        inference_configuration_t ci    = c.ci;
+        logical_function_t        h_current, h_correct;
+        sparse_vector_t           v_current, v_correct;
+        unordered_set<string>     feature_indices;      
+        vector<const literal_t*>  y_literals;
+        lp_inference_cache_t      cache( ci );
+        double                    s_current, s_correct;
+        double                    x_len = 0, xh_len = 0;
 
-        /* TODO: Not updated if it is not good solution. */
-        //if( s_current < s_correct ) {
-        if( Optimal != another_cache.lp.sol_type ) {
-          V(2) cerr << log_head << "Could not find good completion." << endl;
-          (*g_p_out) << "<update loss=\""+ toString( cache.loss.loss, "%f" ) +"\" coefficient=\"-\" />" << endl; function::endXMLtag( "training" );
+        t[i].y_lf.getAllLiterals( &y_literals );
+        ci.training_instance      = t[i];
+        ci.objfunc                = LossAugmented;
+        ci.sol_cache              = sol_cache[i];
+        
+        inference_result_t ret = infer( &h_current, &v_current, &cache, NULL, ci, t[i].x, t[i].x_sexp, kb, true, p_out_sfunc->weights, &ss );
+
+        if( GenerationTimeout == ret ) gave_up_in_generation[t[i].name] = 1;
+        
+        s_current     = cache.lp.optimized_obj;
+
+        cache.printStatistics( &ss );
+        if( ci.proofgraph ) cache.pg.printGraph( cache.lp, cache.lprel, "id=\"i"+ toString("%d", 1+n) +"pred\" type=\"Prediction\"", &ss );
+      
+        function::endXMLtag( "current-prediction", &ss );
+
+        if( NotAvailable == cache.lp.sol_type ) {
+          V(2) cerr << TS() << log_head << "Result of inference is not available." << endl;
+          ss << "<update loss=\"0\" coefficient=\"-\" />" << endl;
+          function::endXMLtag( "training", &ss );
+          (*g_p_out) << ss.str() << endl;
           continue;
         }
+
+        total_loss += cache.loss.loss;
         
-      }
+        /* Caching the solution. */
+        repeat( j, cache.lp.variables.size() )
+          sol_cache[i][ cache.lp.variables[j].name ] = cache.lp.variables[j].optimized;
       
-      /* II) Update the weights! */
-      double                numerator = 0.0, denominator = 0.0;
-      unordered_set<string> feature_indices;
-
-      switch( t[i].type_output ) {
-      case Class:     numerator = -t[i].y_cls * cache.loss.loss; break;
-      case Structure: numerator = s_current - s_correct + cache.loss.loss; V(2) cerr << log_head << "numerator = " << s_current << "-" << s_correct << "+" << cache.loss.loss << endl; break;
-      }
-
-      function::getVectorIndices( &feature_indices, v_current );
-      function::getVectorIndices( &feature_indices, v_correct );
-
-      for( unordered_set<string>::iterator iter_fi = feature_indices.begin(); feature_indices.end() != iter_fi; ++iter_fi ) {
-        string j = *iter_fi;
-        denominator += pow(v_correct[j] - v_current[j], 2);
-      }
-
-      double tau, TauTolerance = c.E * 0.1;
-
-      if( TauTolerance > fabs(numerator) )   numerator = numerator >= 0 ? TauTolerance : -TauTolerance;
-      
-      if( 0.0 == denominator ) tau = 0.0;
-      else tau                     = min( c.C, numerator / denominator ); // numerator / denominator; //2
-
-      //tau = 0.5;
-      cerr << log_head << "Update coefficient: " << tau << " = min(" << c.C << ", " << numerator << " / " << denominator << ")" << endl;
-
-      function::beginXMLtag( "feature-vector", "" );
-      foreach( unordered_set<string>, iter_fi, feature_indices )
-        (*g_p_out) << "<update element=\""<< *iter_fi <<"\" log=\""<< (v_current[*iter_fi] != v_correct[*iter_fi] ? ::toString( 1+num_diff[*iter_fi]++, "*%d " ) : "") <<"\">"
-             << v_current[*iter_fi] << " -> " << v_correct[*iter_fi] << "</update>" << endl;
-      function::endXMLtag( "feature-vector" );      
-      
-      if( 0.0 == tau ) { (*g_p_out) << "<update loss=\"0\" coefficient=\""+ toString( cache.loss.loss, "%f" ) +"\" />" << endl; function::endXMLtag( "training" ); continue; }
-
-      function::beginXMLtag( "update", "loss=\""+ toString( cache.loss.loss, "%f" ) + "\" coefficient=\"" + ::toString( tau, "%f" ) + "\"" );
-      
-      function::beginXMLtag( "loss", "" );
-      (*g_p_out) << cache.loss.printVW() << endl;
-      function::endXMLtag( "loss" );
-      
-      total_updates += fabs(tau);
-
-      ostringstream log_weight_updates;
-      
-      for( unordered_set<string>::iterator iter_fi = feature_indices.begin(); feature_indices.end() != iter_fi; ++iter_fi ) {
-        string j = *iter_fi;
-        if( 0 != v_correct[j] - v_current[j] ) {
-
-          V(3) 
-            log_weight_updates << log_head << "Weight update: w_" << j << " <- " << p_out_sfunc->weights[j] + tau * (v_correct[j] - v_current[j]) << " = " << p_out_sfunc->weights[j] << " + " << tau * (v_correct[j] - v_current[j]) << endl;
+        ci.sol_cache         = sol_cache[i];
         
-          p_out_sfunc->weights[j] += tau * (v_correct[j] - v_current[j]);
+        if( 0.0 == cache.loss.loss ) { ss << "<update loss=\"0\" coefficient=\"0\" />" << endl; function::endXMLtag( "training", &ss );
+          (*g_p_out) << ss.str() << endl;
+          continue; }
 
+        if( Structure == t[i].type_output ) {
+
+          /* I-2) Hiden variable completion! */
+          cerr << endl;
+          _N( " * Hidden variable completion" );
+        
+          /* arg max_{x_i, y_i, h} */
+          function::beginXMLtag( "hidden-variable-completion", "", &ss );
+      
+          lp_inference_cache_t another_cache( ci );
+          ci.objfunc             = LabelGiven;
+          //ci.method              = BnB;
+          //ci.use_cache         = true;
+          ci.initial_label_index = t[i].x.branches.size();
+
+          logical_function_t       x_prime = t[i].x;
+      
+          for( uint_t j=0; j<y_literals.size(); j++ ) {
+            if( !g_store.isNegative( y_literals[j]->predicate ) ) { x_prime.branches.push_back( *y_literals[j] ); }
+          }
+        
+          infer( &h_correct, &v_correct, &another_cache, NULL, ci, x_prime, t[i].x_sexp, kb, true, p_out_sfunc->weights, &ss );
+          s_correct = another_cache.lp.optimized_obj;
+
+          total_minimum_loss += another_cache.loss.loss;
+
+          if( cache.loss.loss == another_cache.loss.loss ) { ss << toString("<update loss=\"%f\" coefficient=\"0\" />", cache.loss.loss) << endl; function::endXMLtag( "training", &ss );
+            (*g_p_out) << ss.str() << endl;
+            continue; }
+
+          variable_cluster_t vc_sys, vc_gold;
+          foreachc( pairwise_vars_t, iter_t1, cache.lprel.pp2v )
+            for( unordered_map<store_item_t, int>::const_iterator iter_t2=iter_t1->second.begin(); iter_t1->second.end()!=iter_t2; ++iter_t2 ) {
+              if( 0.5 < cache.lp.variables[iter_t2->second].optimized ) x_len += 1;
+            }
+
+          foreachc( pairwise_vars_t, iter_t1, another_cache.lprel.pp2v )
+            for( unordered_map<store_item_t, int>::const_iterator iter_t2=iter_t1->second.begin(); iter_t1->second.end()!=iter_t2; ++iter_t2 ) {
+              if( 0.5 < another_cache.lp.variables[iter_t2->second].optimized ) xh_len += 1;
+            }
+
+          /* Create a weighted difference vector. */
+          // sparse_vector_t v_weighted_current, v_weighted_correct;
+          // function::convertLPToHypothesis( &h_current, &v_weighted_current, cache, true );
+          // function::convertLPToHypothesis( &h_correct, &v_weighted_correct, another_cache, true );
+
+          // v_current = v_weighted_current;
+          // v_correct = v_weighted_correct;
+          
+          s_current = score_function_t::getScore( p_out_sfunc->weights, v_current );
+          s_correct = score_function_t::getScore( p_out_sfunc->weights, v_correct );
+
+          x_len = s_current+s_correct;
+          xh_len = s_current+s_correct;
+          
+          //xh_len += another_cache.pg.nodes.size();
+          
+          function::getVectorIndices( &feature_indices, v_correct );
+          function::getVectorIndices( &feature_indices, v_current );
+
+          // for( unordered_set<string>::iterator iter_fi = feature_indices.begin(); feature_indices.end() != iter_fi; ++iter_fi ) {
+          //   if( 1.0 < xh_len ) v_correct[*iter_fi] *= 1.0 / xh_len;
+          //   if( 1.0 < x_len ) v_current[*iter_fi] *= 1.0 / x_len;
+          // }
+
+          /* Re-calculate ;-) */
+          double s_org_current = s_current; s_current = score_function_t::getScore( p_out_sfunc->weights, v_current );
+          double s_org_correct = s_correct; s_correct = score_function_t::getScore( p_out_sfunc->weights, v_correct );
+          
+          another_cache.printStatistics( &ss );
+          if( ci.proofgraph ) another_cache.pg.printGraph( another_cache.lp, another_cache.lprel, "id=\"i"+ toString("%d", 1+n) +"hvc\" type=\"HiddenVariableCompletion\"", &ss );
+
+          function::endXMLtag( "hidden-variable-completion", &ss );
+
+          /* TODO: Not updated if it is not good solution. */
+          if( NotAvailable == another_cache.lp.sol_type || s_org_current < s_org_correct ) {
+            V(2) cerr << TS() << log_head << toString("Could not find a better completion. (HVC: %f > CURR: %f)", s_org_correct, s_org_current) << endl;
+            ss << "<update loss=\""+ toString( "%f", cache.loss.loss ) +"\" coefficient=\"-\" />" << endl; function::endXMLtag( "training", &ss );
+            (*g_p_out) << ss.str() << endl;            
+            continue;
+          }
+        
+        }
+      
+        /* II) Update the weights! */
+        double                numerator = 0.0, denominator = 0.0;
+
+        switch( t[i].type_output ) {
+        case Class:     numerator = -t[i].y_cls * cache.loss.loss; break;
+        case Structure: numerator = s_current - s_correct + cache.loss.loss;  break;
         }
         
-      }
+        for( unordered_set<string>::iterator iter_fi = feature_indices.begin(); feature_indices.end() != iter_fi; ++iter_fi ) {
+          string j = *iter_fi;
+          denominator += pow(v_correct[j] - v_current[j], 2);
+        }
 
-      function::beginXMLtag( "model" );
+        double tau, TauTolerance = c.E * 0.1;
 
-      (*g_p_out) << "(model ";
-      for( weight_vector_t::iterator iter_fi = p_out_sfunc->weights.begin(); p_out_sfunc->weights.end() != iter_fi; ++iter_fi ) {
-        if( 0.0 != iter_fi->second ) (*g_p_out) << "(weight \"" << iter_fi->first << "\" " << iter_fi->second << ") ";
-      }
-      (*g_p_out) << ")" << endl;
+        if( TauTolerance > fabs(numerator) )   numerator = numerator >= 0 ? TauTolerance : -TauTolerance;
 
-      cerr << log_weight_updates.str() << endl;
+        ss << toString( "<update-coefficient numerator=\"%f\" denominator=\"%f\" />", numerator, denominator ) << endl;
+        
+        if( 0.0 == denominator ) tau = 0.0;
+        else                     tau = min( c.C, numerator / denominator );
 
-      function::endXMLtag( "model" );
+        function::beginXMLtag( "feature-vector-diff", "", &ss );
 
-      function::endXMLtag( "update" );
-      function::endXMLtag( "training" );
+        foreach( unordered_set<string>, iter_fi, feature_indices )
+          ss << " <element name=\""<< *iter_fi <<"\" log=\""<< (v_current[*iter_fi] != v_correct[*iter_fi] ? ::toString( "*%d ", 1+num_diff[*iter_fi]++ ) : "") << "\" diff=\"" << v_correct[*iter_fi] - v_current[*iter_fi] << "\">"
+             << v_current[*iter_fi] << " -> " << v_correct[*iter_fi] << "</element>" << endl;
+        
+        function::endXMLtag( "feature-vector-diff", &ss );      
       
+        if( 0.0 == tau ) { ss << toString( "<update loss=\"%f\" coefficient=\"0\" />", cache.loss.loss ) << endl; function::endXMLtag( "training", &ss );
+          (*g_p_out) << ss.str() << endl;
+          continue; }
+
+        function::beginXMLtag( "update", toString("loss=\"%f\" coefficient=\"%f\" vector-diff=\"%f\">", cache.loss.loss, tau, denominator), &ss );
+      
+        function::beginXMLtag( "loss", "", &ss );
+        ss << cache.loss.printVW() << endl;
+        function::endXMLtag( "loss", &ss );
+
+        total_updates += fabs(tau);
+
+        function::beginXMLtag( "weight-vector", "", &ss );
+        for( unordered_set<string>::iterator iter_fi = feature_indices.begin(); feature_indices.end() != iter_fi; ++iter_fi ) {
+          string j = *iter_fi;
+          if( 0 != v_correct[j] - v_current[j] ) {
+            ss << toString("<element name=\"%s\">%f -> %f</element>", j.c_str(), p_out_sfunc->weights[j], p_out_sfunc->weights[j] + tau * (v_correct[j] - v_current[j])) << endl;
+            p_out_sfunc->weights[j] += tau * (v_correct[j] - v_current[j]);
+
+          }
+        
+        }
+        function::endXMLtag( "weight-vector", &ss );
+
+        num_actually_trained++;
+        
+        /* Check-sum. */
+        double s_new_current = 0.0, s_new_correct = 0.0;
+        
+        for( weight_vector_t::iterator iter_fi = p_out_sfunc->weights.begin(); p_out_sfunc->weights.end() != iter_fi; ++iter_fi ) {
+          s_new_current += iter_fi->second * v_current[iter_fi->first];
+          s_new_correct += iter_fi->second * v_correct[iter_fi->first];
+        }
+
+        ss << toString("<check-sum old-current=\"%f\" new-current=\"%f\" old-correct=\"%f\" new-correct=\"%f\" diff=\"%f\" />", s_current, s_new_current, s_correct, s_new_correct, s_new_correct - s_new_current) << endl;
+        
+        function::beginXMLtag( "model", "", &ss );
+
+        ss << "(model ";
+        for( weight_vector_t::iterator iter_fi = p_out_sfunc->weights.begin(); p_out_sfunc->weights.end() != iter_fi; ++iter_fi ) {
+          if( 0.0 != iter_fi->second ) ss << "(weight \"" << iter_fi->first << "\" " << iter_fi->second << ") ";
+        }
+        ss << ")" << endl;
+
+        function::endXMLtag( "model", &ss );
+
+        function::endXMLtag( "update", &ss );
+        function::endXMLtag( "training", &ss );
+
+        (*g_p_out) << ss.str() << endl;
+        
+      }
+
+      break;
+            
     }
 
-    cerr << "# -- Total loss: " << total_loss << " (avg. = " << (total_loss / t.size()) << " / min. = " << minimum_loss << ")" << endl;
-    cerr << "# -- Total update: " << total_updates << " (avg. = " << (total_updates / t.size()) << ")" << endl;
+    /* CHILD:  WRITE THE RESULTS TO THE FILE, AND JUST BREAK. */
+    if( 0 == forked_pid ) {
+      cerr << TS() << "fork() = " << child_pid << " will exit." << endl;
 
+      /* WRITE THE TRAINED WEIGHTS. */
+      ofstream ofs(toString("./w-fork-%d.tmp", child_pid).c_str(), ofstream::out);
+
+      /* HEADERS. */
+      ofs << num_actually_trained << "\t" << total_loss << "\t" << total_updates << endl;
+
+      /* WEIGHT VECTOR. */
+      for( weight_vector_t::iterator iter_fi = p_out_sfunc->weights.begin(); p_out_sfunc->weights.end() != iter_fi; ++iter_fi ) {
+        if( 0.0 != iter_fi->second ) ofs << iter_fi->first << "\t" << iter_fi->second << endl;
+      }
+
+      ofs << "_END_\t0.0" << endl;
+
+      /* GAVE_UP_IN_GENERATION. */
+      for( unordered_map<string,int>::iterator iter_gug=gave_up_in_generation.begin(); gave_up_in_generation.end()!=iter_gug; ++iter_gug)
+        if( 1 == iter_gug->second ) ofs << iter_gug->first << endl;
+      
+      ofs.close();
+      g_ext.finalize();
+      exit(0);
+    }
+
+    /* PARENT: WAIT FOR ALL THE PROCESSES TO END, AND MERGE THE RESULTS. */
+    vector<pair<weight_vector_t,double> > results;
+    pid_t ret;
+      
+    while((ret = waitpid(-1, NULL, WNOHANG)) >= 0) {
+      if( 0 == ret ) continue;
+      cerr << TS() << "Welcome home, " << ret << "." << endl;
+
+      ifstream        ifs(toString("./w-fork-%d.tmp", ret).c_str());
+      string          name, local_gug;; double value, local_loss, local_updates;
+      int             local_num_trained;
+      weight_vector_t weights;
+
+      ifs >> local_num_trained >> local_loss >> local_updates;
+      num_actually_trained += local_num_trained;
+      total_loss           += local_loss;
+      total_updates        += local_updates;
+        
+      while( ifs >> name >> value && "_END_" != name )
+        weights[ name ] = value;
+
+      results.push_back( make_pair(weights, (double)local_num_trained) );
+
+      while( ifs >> local_gug )
+        gave_up_in_generation[local_gug] = 1;
+      
+      ifs.close();
+      remove(toString("./w-fork-%d.tmp", ret).c_str());
+    }
+
+    p_out_sfunc->weights = weight_vector_t();
+    
+    repeat( i, results.size() )
+      for( weight_vector_t::iterator iter_fi = results[i].first.begin(); results[i].first.end() != iter_fi; ++iter_fi )
+        p_out_sfunc->weights[iter_fi->first] += (results[i].second/num_actually_trained) * iter_fi->second;
+    
+    /* OUTPUT THE CURRENT MODEL. */
+    function::beginXMLtag( "model" );
+    (*g_p_out) << "(model ";
+    for( weight_vector_t::iterator iter_fi = p_out_sfunc->weights.begin(); p_out_sfunc->weights.end() != iter_fi; ++iter_fi ) {
+      if( 0.0 != iter_fi->second ) (*g_p_out) << "(weight \"" << iter_fi->first << "\" " << iter_fi->second << ") ";
+    }
+    
+    (*g_p_out) << ")" << endl;
+    function::endXMLtag( "model" );
+
+    cerr << TS() << "# -- Total loss: " << total_loss << " (avg. = " << (total_loss / t.size()) << ")" << endl;
+    cerr << TS() << "# -- Total update: " << total_updates << " (avg. = " << (total_updates / t.size()) << ")" << endl;
+
+    cout << toString("<total-update total-loss=\"%f\" minimum-loss=\"%f\" averaged-loss=\"%f\" averaged-update=\"%f\" />", total_loss, total_minimum_loss, total_loss/t.size(), total_updates/t.size()) << endl;
+    
     function::endXMLtag( "learn-process" );
     
-    if( 0.0 == total_updates || minimum_loss == total_loss ) {
-      cerr << "# ... Ok, that's enough. "
+    if( 0.0 == total_updates || total_minimum_loss == total_loss ) {
+      cerr << TS() << "# ... Ok, that's enough. "
            << "Henry terminated the training procedure in " << 1+n << "-th iteration." << endl;
       break;
     }
@@ -319,7 +508,7 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
   /* Read the precompiled knowledge base. */
   if( has_key( cmd, 'b' ) && NULL != p_out_kb ) {
     if( !function::readPrecompiledKB( p_out_kb, cmd[ 'b' ] ) ) {
-      cerr << "ERROR: Could not read the precomplied knowledge base." << endl;
+      E( "Could not read the precomplied knowledge base.");
       return false;
     }
   }
@@ -360,7 +549,7 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
         
             string index  = sr.stack.children[i]->children[1]->getString();
             double weight = atof( sr.stack.children[i]->children[2]->getString().c_str() );
-            V(4) cerr << "Weight loaded: " << index << ":" << weight << endl;
+            V(4) cerr << TS() << "Weight loaded: " << index << ":" << weight << endl;
             
             p_out_sfunc->weights[ index ] = weight;
 
@@ -376,14 +565,17 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
 
         if( NULL != p_out_pckb ) {
           logical_function_t lf( *sr.stack.children[i_lf] );
-          (*p_out_pckb)[ lf.branches[1].lit.predicate ][ lf.branches[1].lit.terms.size() ].push_back( sr.stack.toString() );
-          f_kb_modified = true;
+          if( Literal == lf.branches[1].opr ) {
+            (*p_out_pckb)[ lf.branches[1].lit.predicate ][ lf.branches[1].lit.terms.size() ].push_back( sr.stack.toString() );
+            f_kb_modified = true;
+          } else {
+            (*p_out_pckb)[ lf.branches[1].branches[0].lit.predicate ][ lf.branches[1].branches[0].lit.terms.size() ].push_back( sr.stack.toString() );
+            f_kb_modified = true;
+          }
+          
         }
       }
 
-      if( sr.stack.isFunctor( "score-function" ) )
-        p_out_sfunc->setFunctionTemplate( sr.stack );
-      
       if( sr.stack.isFunctor( "O" ) && NULL != p_out_ic ) {
         
         /* Compile the knowledge base. */
@@ -398,25 +590,30 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
         int
           i_x    = sr.stack.findFunctorArgument( AndString ), i_y    = sr.stack.findFunctorArgument( FnTrainingLabel ),
           i_name = sr.stack.findFunctorArgument( "name" ),    i_cls  = -1, i_structure = -1;
+        
+        string the_name = toString( "%s::%s", (string::npos != args[a].rfind("/") ? args[a].substr(args[a].rfind("/")+1) : args[a]).c_str(), (-1 != i_name ? sr.stack.children[i_name]->children[1]->getString() : "?").c_str() );
 
-        if( -1 == i_x ) E( "Input not found." );
+        if( -1 == i_x ) { W( "Input not found:" << the_name ); continue; }
 
         logical_function_t obs( *sr.stack.children[i_x] );
         training_data_t    td;
         
         if( -1 != i_y ) {
           i_cls = sr.stack.children[ i_y ]->findFunctorArgument( "class" );
-          i_structure = sr.stack.children[ i_y ]->findFunctorArgument( "structure" );
+          i_structure = sr.stack.children[ i_y ]->findFunctorArgument( AndString );
           
           if( -1 != i_cls )
             td = training_data_t( obs,
                                 atoi( sr.stack.children[ i_y ]->children[ i_cls ]->children[1]->getString().c_str() ),
-                                -1 != i_name ? sr.stack.children[i_name]->children[1]->getString() : "" );
+                                the_name );
             
-          else
+          else if( -1 != i_structure )
             td = training_data_t( obs,
-                                logical_function_t( *sr.stack.children[ i_y ]->children[ i_structure ]->children[1] ),
-                                -1 != i_name ? sr.stack.children[i_name]->children[1]->getString() : "" );
+                                logical_function_t( *sr.stack.children[ i_y ]->children[ i_structure ] ),
+                                the_name );
+          else
+            { W( "Label empty: " << the_name ); i_y = -1; i_structure = -1; }
+            
         }
 
         td.x_sexp = sr.stack.toString();
@@ -432,22 +629,25 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
         if( "learn" == cmd['m'] ) {
           
           /* Usage: (O (^ p1 p2 p3 ...) (output (class|structure (^ label)) ) ) */
-          if( -1 == i_cls && -1 == i_structure ) { cerr << "Only supervised learning is supported." << endl; continue; }
+          if( -1 == i_cls && -1 == i_structure ) { W( "Label not found: " << the_name << " ... only supervised learning is supported." ); continue; }
         
           if( NULL != p_out_t ) p_out_t->push_back( td );
 
         } else if( "infer" == cmd['m'] ) {
-        
+
+          cerr << endl;
+          _N( " * Target: " << the_name );
+          
           logical_function_t   best_h;
           lp_inference_cache_t cache( *p_out_ic );
           sparse_vector_t      v_current;
-        
+
           (*g_p_out) << "<result-inference target=\"" << (-1 != i_name ? sr.stack.children[i_name]->children[1]->getString() : "") << "\">" << endl;
 
           p_out_ic->training_instance = td;
           
           function::enumerateConstatns( &p_out_kb->constants, obs );
-          algorithm::infer( &best_h, &v_current, &cache, NULL, *p_out_ic, obs, sr.stack.toString(), *p_out_kb );
+          algorithm::infer( &best_h, &v_current, &cache, NULL, *p_out_ic, obs, sr.stack.toString(), *p_out_kb, false, p_out_sfunc->weights );
         
           /* Basic output. */
           vector<const literal_t*> literals_obs;
@@ -456,10 +656,6 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
           cache.printStatistics();
           if( p_out_ic->proofgraph ) cache.pg.printGraph( cache.lp, cache.lprel );
         
-          (*g_p_out) << "<observed size=\"" << literals_obs.size() << "\" domain_size=\"" << p_out_kb->constants.size() << "\">" << obs.toString() << "</observed>" << endl
-               << "<hypothesis score=\"" << cache.lp.optimized_obj << "\">" << best_h.toString() << "</hypothesis>" << endl
-               << "<vector>" << function::toString(v_current) << "</vector>" << endl;
-
           if( p_out_ic->show_variable_cluster ) {
             (*g_p_out) << "<variable-equivalence>" << endl;
 
@@ -488,7 +684,7 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
               f_structured = true;
               
               (*g_p_out) << "<task-result"
-                   << " gold-structure=\""<< logical_function_t( *sr.stack.children[ i_y ]->children[ i_structure ]->children[1] ).toString() << "\""
+                   << " gold-structure=\""<< logical_function_t( *sr.stack.children[ i_y ]->children[ i_structure ] ).toString() << "\""
                    << " loss=\""<< cache.loss.loss <<"\" />" << endl;
             }
           }
@@ -541,31 +737,38 @@ bool _moduleCompileKb( command_option_t &cmd, vector<string> &args ) {
 bool _moduleProcessInferOptions( inference_configuration_t *p_out_con, command_option_t &cmd ) {
   
   if( !has_key( cmd, 'd' ) ) cmd[ 'd' ] = "9999";
-  if( !has_key( cmd, 'c' ) ) cmd[ 'c' ] = "9999";
   if( !has_key( cmd, 'T' ) ) cmd[ 'T' ] = "9999";
   if( !has_key( cmd, 't' ) ) cmd[ 't' ] = "1";
   if( !has_key( cmd, 'O' ) ) cmd[ 'O' ] = "";
   if( !has_key( cmd, 'i' ) ) cmd[ 'i' ] = "bnb";
   if( !has_key( cmd, 'k' ) ) cmd[ 'k' ] = "1";
+  if( !has_key( cmd, 'c' ) ) cmd[ 'c' ] = "wa";
 
-  p_out_con->max_variable_clusters = atoi( cmd[ 'c' ].c_str() );
   p_out_con->depthlimit            = atoi( cmd[ 'd' ].c_str() );
   p_out_con->timelimit             = atof( cmd[ 'T' ].c_str() );
   p_out_con->nbthreads             = atof( cmd[ 't' ].c_str() );
   p_out_con->extension_module      = cmd[ 'e' ];
   p_out_con->k_best                = atoi(cmd[ 'k' ].c_str());
 
-  if( has_key( cmd, 'e' ) ) g_ext.initialize( p_out_con->extension_module, cmd[ 'f' ] );
+  if( has_key( cmd, 'e' ) ) {
+    g_ext.filename = p_out_con->extension_module;
+    g_ext.args     = cmd[ 'f' ];
+  }
     
   if( "ls" == cmd['i'] )  p_out_con->method       = LocalSearch;
   else if( "rlp" == cmd['i'] )  p_out_con->method = RoundLP;
   else if( "bnb" == cmd['i'] )  p_out_con->method = BnB;
   else if( "cpi" == cmd['i'] )  p_out_con->method = CuttingPlaneBnB;
 
+  if( "wa" == cmd['c'] ) p_out_con->p_sfunc->tp = WeightedAbduction;
+  else                   p_out_con->p_sfunc->tp = UserDefined;
+
   if( string::npos != cmd[ 'O' ].find( "proofgraph" ) ) p_out_con->proofgraph            = true;
   if( string::npos != cmd[ 'O' ].find( "ilp" ) )        p_out_con->ilp                   = true;
   if( string::npos != cmd[ 'O' ].find( "varcluster" ) ) p_out_con->show_variable_cluster = true;
   if( string::npos != cmd[ 'O' ].find( "stats" ) )      p_out_con->show_statistics       = true;
+
+  p_out_con->output_info = cmd[ 'O' ];
 
   if( atoi( cmd['v'].c_str() ) >= 2 ) p_out_con->is_ilp_verbose = true;
 
@@ -602,12 +805,14 @@ bool _moduleLearn( command_option_t &cmd, vector<string> &args ) {
   _moduleProcessInferOptions( &c.ci, cmd );
 
   if( !has_key( cmd, 'C' ) ) cmd[ 'C' ] = "1.0";
+  if( !has_key( cmd, 'S' ) ) cmd[ 'S' ] = "10";
   if( !has_key( cmd, 'N' ) ) cmd[ 'N' ] = "9999";
   if( !has_key( cmd, 'E' ) ) cmd[ 'E' ] = "10e-05";
   
   c.method = OnlinePassiveAggressive;
   c.C      = atof(cmd['C'].c_str());
   c.N      = atoi(cmd['N'].c_str());
+  c.S      = atoi(cmd['S'].c_str());
   c.E      = atof(cmd['E'].c_str());
 
   _moduleProcessInput( &t, &sfunc, &kb, &pckb, &c, &c.ci, cmd, args );
@@ -615,9 +820,10 @@ bool _moduleLearn( command_option_t &cmd, vector<string> &args ) {
   /* Compile the knowledge base. */
   if( !has_key( cmd, 'b' ) && 0 == kb.axioms.size() )
     if( !function::compileKB( &kb, pckb ) ) {
-      cerr << "ERROR: Knowledge compilation failed." << endl;
+      E( "Knowledge compilation failed." );
       return false;
     }
+
   
   algorithm::learn( &sfunc, c, t, kb );
 
@@ -646,7 +852,7 @@ int main( int argc, char **pp_args ) {
 
   command_option_t cmd;
   vector<string>   args;
-  function::getParsedOption( &cmd, &args, "m:v:i:b:C:N:t:T:w:E:O:o:p:d:c:e:f:k:", argc, pp_args );
+  function::getParsedOption( &cmd, &args, "m:v:i:b:C:N:t:T:w:E:O:o:p:d:c:e:f:k:S:", argc, pp_args );
 
   if( !has_key( cmd, 'm' ) ) { cerr << str_usage << endl; return 1; }
   

@@ -8,11 +8,11 @@
 
 #define GRBEXECUTE(x) \
   try{ x; } \
-  catch( GRBException e ) { cerr << __FILE__ << ":" << __LINE__ << ": " << e.getErrorCode() << ": " << e.getMessage() << endl; }
+  catch( GRBException e ) { cerr << TS() << __FILE__ << ":" << __LINE__ << ": " << e.getErrorCode() << ": " << e.getMessage() << endl; }
 
 #define GRBEXECUTEMSG(x, y)                          \
   try{ x; } \
-  catch( GRBException e ) { cerr << __FILE__ << ":" << __LINE__ << ": " << e.getErrorCode() << ": " << e.getMessage() << ": " << y << endl; }
+  catch( GRBException e ) { cerr << TS() << __FILE__ << ":" << __LINE__ << ": " << e.getErrorCode() << ": " << e.getMessage() << ": " << y << endl; }
 
 typedef unordered_map<int, GRBVar> gurobi_varmap_t;
 
@@ -56,24 +56,13 @@ public:
   inline void callback() {
     switch( where ) {
     case GRB_CB_MIPSOL: {
-      double f_gap = (getDoubleInfo( GRB_CB_MIPSOL_OBJBND ) - getDoubleInfo( GRB_CB_MIPSOL_OBJ )) / getDoubleInfo( GRB_CB_MIPSOL_OBJ );
-
+      V(1) cerr << TS() << "New solution! (Obj:"<< getDoubleInfo( GRB_CB_MIPSOL_OBJ ) <<")" << endl;
+      
       /* Push the solution to the stack. */
-      V(1) cerr << "New solution!" << endl;
       m_lp.second_best_solution_stack = m_lp.best_solution_stack;
       m_lp.best_solution_stack.clear();
-      repeat( i, m_lp.variables.size() ) m_lp.best_solution_stack.push_back( getSolution( m_varmap[i] ) );
-
-      if( CuttingPlaneBnB != m_conf.method ) break;
       
-      num_evaluated++;
-      V(1) cerr << "CPI: " << "I=" << num_evaluated << ": New solution! (Obj = "<< getDoubleInfo( GRB_CB_MIPSOL_OBJ ) <<"Gap = "<< f_gap <<")" << endl;
-
-      if( !m_exact_try ) {
-        if( fabs(f_gap) >= 0.1 ) { m_last_checked = false; break; }
-      }
-
-      m_last_checked   = true;
+      repeat( i, m_lp.variables.size() ) m_lp.best_solution_stack.push_back( getSolution( m_varmap[i] ) );
 
       repeat( i, m_lp.constraints.size() ) {
         if( !m_lp.constraints[i].is_lazy ) continue;
@@ -81,7 +70,7 @@ public:
         double           val = 0.0;
         lp_constraint_t &con = m_lp.constraints[i];
         
-        repeat( j, m_lp.constraints[i].vars.size() )
+        repeat( j, con.vars.size() )
           val += con.coes[j] * getSolution( m_varmap[ con.vars[j] ] );
 
         if( !con.isSatisfied(val) ) {
@@ -89,106 +78,34 @@ public:
 
           repeat( j, con.vars.size() )
             expr_lin  += con.coes[j] * m_varmap[ con.vars[j] ];
+
+          GRBEXECUTE(
+                     if( LessEqual == con.opr )         addLazy( expr_lin, GRB_LESS_EQUAL, con.rhs );
+                     else if( GreaterEqual == con.opr ) addLazy( expr_lin, GRB_GREATER_EQUAL, con.lhs );
+                     else if( Equal == con.opr )        addLazy( expr_lin, GRB_EQUAL, con.rhs );
+                     else if( Range == con.opr ) {      addLazy( expr_lin, GRB_LESS_EQUAL, con.rhs ); addLazy( expr_lin, GRB_GREATER_EQUAL, con.lhs ); }
+                     );
+
+          num_activated++;
           
-          if( LessEqual == con.opr )         addLazy( expr_lin <= con.rhs );
-          else if( GreaterEqual == con.opr ) addLazy( con.lhs <= expr_lin );
-          else if( Equal == con.opr )        addLazy( expr_lin == con.rhs );
-          else if( Range == con.opr ) {      addLazy( con.lhs <= expr_lin ); addLazy( expr_lin <= con.rhs ); }
-
-          m_lp.constraints[i].is_lazy = false;
-        }        
-      }
-      
-      /* Identify activated unification. */
-      variable_cluster_t         vc;
-      unordered_map<int, double> sol_cache;
-
-      /* Create equivalent clusters. */
-      unordered_map<store_item_t, unordered_set<store_item_t> > potentially_unified;
-      
-      foreachc( pairwise_vars_t, iter_t1, m_lprel.pp2v )
-        for( unordered_map<store_item_t, int>::const_iterator iter_t2=iter_t1->second.begin(); iter_t1->second.end()!=iter_t2; ++iter_t2 ) {
-          potentially_unified[iter_t1->first].insert( iter_t2->first );
-          potentially_unified[iter_t2->first].insert( iter_t1->first );
-          sol_cache[iter_t2->second] = getSolution( m_varmap[ iter_t2->second ] );
-          //if( 0.5 < sol_cache[iter_t2->second] ) vc.add( iter_t1->first, iter_t2->first );
+          con.is_lazy = false;
         }
-
-      foreachc( pairwise_vars_t, iter_t1, m_lprel.pp2v )
-        for( unordered_map<store_item_t, int>::const_iterator iter_t2=iter_t1->second.begin(); iter_t1->second.end()!=iter_t2; ++iter_t2 ) {
-          store_item_t t1 = iter_t1->first, t2 = iter_t2->first;
-
-          foreach( unordered_set<store_item_t>, iter_tu, potentially_unified[t1] ) {
-            if( potentially_unified[t2].end() == potentially_unified[t2].find(*iter_tu) ) continue;
-
-            int v_ij = _getCorefVar(t1, t2), v_ik = _getCorefVar(t1, *iter_tu), v_jk = _getCorefVar(t2, *iter_tu);
-            int s_ij = sol_cache[v_ij], s_ik = sol_cache[v_ik], s_jk = sol_cache[v_jk];
-            
-            if( 2 != (s_ij+s_ik+s_jk) ) continue;
-
-            if( 1 == s_ij && 1 == s_ik )      { addLazy( -m_varmap[v_ij] - m_varmap[v_ik] + m_varmap[v_jk] >= -1 ); m_added_constr.push_back( -m_varmap[v_ij] - m_varmap[v_ik] + m_varmap[v_jk] >= -1 ); }
-            else if( 1 == s_ij && 1 == s_jk ) { addLazy( -m_varmap[v_ij] - m_varmap[v_jk] + m_varmap[v_ik] >= -1 ); m_added_constr.push_back( -m_varmap[v_ij] - m_varmap[v_jk] + m_varmap[v_ik] >= -1 ); }
-            else if( 1 == s_ik && 1 == s_jk ) { addLazy( -m_varmap[v_ik] - m_varmap[v_jk] + m_varmap[v_ij] >= -1 ); m_added_constr.push_back( -m_varmap[v_ik] - m_varmap[v_jk] + m_varmap[v_ij] >= -1 ); }
-
-            num_activated++;
-            
-            // cerr << g_store.claim(t1) << "," << g_store.claim(t2) << "(" << sol_cache[v_ij] << ")" << ","
-            //      << g_store.claim(t1) << "," << g_store.claim(*iter_tu) << "(" << sol_cache[v_ik] << ")" << ","
-            //      << g_store.claim(t2) << "," <<  g_store.claim(*iter_tu) << "(" << sol_cache[v_jk] << ")" << "," << endl;
-            
-          }
-          
-        }
-      
-      /* Remember, you are not wrong. It succeeded when you generate
-         all the transitivity constraints in advance and iteratively
-         activated them. */
-      foreach( variable_cluster_t::cluster_t, iter_vc, vc.clusters ) {
-        vector<store_item_t> variables( iter_vc->second.begin(), iter_vc->second.end() );
-
-        /* Identify inactive unification (i,j) in this cluster. */
-        repeat( i, variables.size() ) {
-          repeatf( j, i+1, variables.size() ) {
-            store_item_t ti     = variables[i], tj = variables[j]; if( ti > tj ) swap( ti, tj );
-            int          v_titj = _getCorefVar(ti, tj);
-
-            if( -1 == v_titj ) continue;
-            if( m_conf.isTimeout() ) return;
-
-            GRBVar &gv_titj = m_varmap[ v_titj ];
-                                 
-            /* Transitivity constraint is violated. */
-              
-            repeat( k, variables.size() ) {
-              if( i == k || j == k ) continue;
-              if( m_conf.isTimeout() ) return;
-                
-              /* Create transitivity constraint for (i, j, k). It
-                 guarantees ik ^ jk => ij. */
-              store_item_t tk     = variables[k];
-              int          v_titk = _getCorefVar(ti, tk), v_tjtk = _getCorefVar(tj, tk);
-              if( -1 == v_titk || -1 == v_tjtk ) continue;
-              if( 0.5 < sol_cache[ v_titk ] && 0.5 < sol_cache[ v_tjtk ] ) continue;
-              if( 0.5 > sol_cache[ v_titk ] && 0.5 > sol_cache[ v_tjtk ] ) continue;
-
-              GRBVar     gvars[] = { gv_titj, m_varmap[ v_titk ], m_varmap[ v_tjtk ] };
-              double     ctc1[]  = {1.0, -1.0, -1.0}, ctc2[] = {-1.0, 1.0, -1.0}, ctc3[] = {-1.0, -1.0, 1.0};
-              GRBLinExpr c1, c2, c3;
-              c1.addTerms( ctc1, gvars, 3 ); //c2.addTerms( ctc2, gvars, 3 ); c3.addTerms( ctc3, gvars, 3 );
-              GRBEXECUTE( addLazy(c1, GRB_GREATER_EQUAL, -1); ); //addLazy(c2, GRB_GREATER_EQUAL, -1); addLazy(c3, GRB_GREATER_EQUAL, -1); );
-                
-              num_activated++;
-            }
-
-          } }
       }
-      
-      V(1) cerr << "CPI: " << "I=" << num_evaluated << ": Activated constraints: " << num_activated << endl;
       break; }
     }
   }
     
 };
+
+inline int _getCorefVar( store_item_t t1, store_item_t t2, const lp_problem_mapping_t &lprel ) {
+  store_item_t t1s = t1, t2s = t2; if( t1s > t2s ) swap( t1s, t2s );
+    
+  pairwise_vars_t::const_iterator k1 = lprel.pp2v.find(t1s);
+  if( lprel.pp2v.end() == k1 ) return -1;
+
+  unordered_map<store_item_t, int>::const_iterator k2 = k1->second.find(t2s);
+  return k1->second.end() == k2 ? -1 : k2->second;
+}
 
 ilp_solution_type_t function::solveLP_BnB( linear_programming_problem_t *p_out_lp, lp_problem_mapping_t *p_out_lprel, const inference_configuration_t &c, lp_inference_cache_t *p_out_cache ) {
 
@@ -200,12 +117,11 @@ ilp_solution_type_t function::solveLP_BnB( linear_programming_problem_t *p_out_l
   
   cb.m_timeout = c.timelimit;
 
-  V(2) cerr << "Converting the problem into LP optimization problem..." << endl;
+  V(2) cerr << TS() << "Converting the problem into LP optimization problem..." << endl;
   
   /* Create variables. */
   GRBEXECUTE(
   repeat( i, p_out_lp->variables.size() ) {
-    //p_out_lp->variables[i].f_continuous = true;
     if( InvalidFixedValue != p_out_lp->variables[i].fixed_val ) {
       var_map[i] = model.addVar( p_out_lp->variables[i].fixed_val, p_out_lp->variables[i].fixed_val,
                                  p_out_lp->variables[i].obj_val, p_out_lp->variables[i].f_continuous ? GRB_CONTINUOUS : (1.0 == p_out_lp->variables[i].ub - p_out_lp->variables[i].lb ? GRB_BINARY : GRB_INTEGER ) );
@@ -246,17 +162,15 @@ ilp_solution_type_t function::solveLP_BnB( linear_programming_problem_t *p_out_l
       repeat( j, con.vars.size() ) sosv.push_back( var_map[ con.vars[j] ] );
       model.addSOS( &sosv[0], &con.coes[0], sosv.size(), SOS1 == con.opr ? GRB_SOS_TYPE1 : GRB_SOS_TYPE2 );
       break; }
-    case Equal: {        model.addConstr( expr_lin, GRB_EQUAL, con.lhs, con.name );         break; }
-    case LessEqual: {    model.addConstr( expr_lin, GRB_LESS_EQUAL, con.rhs, con.name );    break; }
-    case GreaterEqual: { model.addConstr( expr_lin, GRB_GREATER_EQUAL, con.rhs, con.name ); break; }
-    case Range: {        model.addRange( expr_lin, con.lhs, con.rhs, con.name );            break; }
-    default:             cerr << "SolveLP_BnB: Unknown constraint type." << endl;
+    case Equal: {        model.addConstr( expr_lin, GRB_EQUAL, con.lhs, con.name.substr(0, 32) );         break; }
+    case LessEqual: {    model.addConstr( expr_lin, GRB_LESS_EQUAL, con.rhs, con.name.substr(0, 32) );    break; }
+    case GreaterEqual: { model.addConstr( expr_lin, GRB_GREATER_EQUAL, con.rhs, con.name.substr(0, 32) ); break; }
+    case Range: {        model.addRange( expr_lin, con.lhs, con.rhs, con.name.substr(0, 32) );            break; }
+    default:             cerr << TS() << "SolveLP_BnB: Unknown constraint type." << endl;
     }, p_out_lp->constraints[i].toString( p_out_lp->variables )
                   );
   }
 
-  V(2) cerr << "... done." << endl;
- 
   /* State a maximization objective. */
   model.set( GRB_IntAttr_ModelSense, GRB_MAXIMIZE );
   
@@ -268,78 +182,135 @@ ilp_solution_type_t function::solveLP_BnB( linear_programming_problem_t *p_out_l
              );
   
   if( InvalidCutoff != p_out_lp->cutoff ) model.getEnv().set( GRB_DoubleParam_Cutoff, p_out_lp->cutoff );
-  if( CuttingPlaneBnB == c.method ) GRBEXECUTE(model.getEnv().set( GRB_IntParam_DualReductions, 0 ));
+  //if( CuttingPlaneBnB == c.method ) GRBEXECUTE(model.getEnv().set( GRB_IntParam_DualReductions, 0 ));
+  GRBEXECUTE(model.getEnv().set( GRB_IntParam_DualReductions, 0 ));
                                                
   GRBEXECUTE(model.setCallback( &cb ));
   
   if( c.is_ilp_verbose ) beginXMLtag( "ilp-log", "solver=\"gurobi\"" );
 
-  double time_start = getTimeofDaySec();
+  double time_start     = getTimeofDaySec();
+  bool   f_got_solution = false;
   
   g_p_model = &model;
   
   if( CuttingPlaneBnB == c.method ) {
 
-    signal( SIGINT, _cb_stop_ilp );
-    GRBEXECUTE( model.optimize() );
+    int n, num_constraints_added = 0;
+    
+    for( n=0; !c.isTimeout(); n++ ) {
+
+      cerr << TS() << "CPI: I=" << n << ": Started." << endl;
+
+      model.getEnv().set( GRB_DoubleParam_TimeLimit, c.timelimit - (getTimeofDaySec() - time_start) );
+
+      signal( SIGINT, _cb_stop_ilp );
+      GRBEXECUTE( model.optimize() );
+      signal( SIGINT, catch_int );
       
-    if( !cb.m_last_checked && 0 < model.get( GRB_IntAttr_SolCount ) && GRB_TIME_LIMIT != model.get( GRB_IntAttr_Status ) ) {
-      repeat( i, cb.m_added_constr.size() )
-        model.addConstr( cb.m_added_constr[i] );
+      if( GRB_TIME_LIMIT == model.get(GRB_IntAttr_Status) ) { cerr << TS() << "CPI: I=" << n << ": Timeout." << endl; break; }
+      else if( GRB_CUTOFF == model.get(GRB_IntAttr_Status) )     { cerr << TS() << "CPI: I=" << n << ": Cutoff." << endl; break; }
+      else if( GRB_INFEASIBLE == model.get(GRB_IntAttr_Status) ) { cerr << TS() << "CPI: I=" << n << ": Infeasible." << endl; f_got_solution = false; break; }
+      else if( GRB_OPTIMAL != model.get(GRB_IntAttr_Status) ) {cerr << TS() << "CPI: I=" << n << ": ?" << endl; f_got_solution = false; break; }
 
-      cb.m_exact_try = true;
+      /* Any constraints violated? */
+      int                        num_constraints_locally_added = 0;
+
+      foreachc( pairwise_vars_t, iter_t1, p_out_lprel->pp2v )
+        for( unordered_map<store_item_t, int>::const_iterator iter_t2=iter_t1->second.begin(); iter_t1->second.end()!=iter_t2; ++iter_t2 ) {
+          if( c.isTimeout() ) goto BED;
+          if( !p_out_cache->evc.isInSameCluster(iter_t1->first, iter_t2->first) ) continue;
+          
+          store_item_t                 t1 = iter_t1->first, t2 = iter_t2->first;
+          unordered_set<store_item_t> &vs = p_out_cache->evc.clusters[p_out_cache->evc.map_v2c[t1]];
+
+          /* TRANSITIVE RELATIONS SHOULD HOLD WITH THE OTHER VARIABLES
+             IN THE SAME EQV CLUSTER. */
+          foreach( unordered_set<store_item_t>, iter_tu, vs ) {
+            if(c.isTimeout()) goto BED;
+            if(*iter_tu == t1 || *iter_tu == t2) continue;
+
+            int    v_ij = _getCorefVar(t1, t2, *p_out_lprel), v_ik = _getCorefVar(t1, *iter_tu, *p_out_lprel), v_jk = _getCorefVar(t2, *iter_tu, *p_out_lprel);
+            double s_ij = var_map[v_ij].get(GRB_DoubleAttr_X), s_ik = var_map[v_ik].get(GRB_DoubleAttr_X), s_jk = var_map[v_jk].get(GRB_DoubleAttr_X);
+
+            if( -s_ij - s_jk + s_ik < -1 ) { model.addConstr( -var_map[v_ij] - var_map[v_jk] + var_map[v_ik] >= -1 ); num_constraints_locally_added++; }
+            if( -s_ij + s_jk - s_ik < -1 ) { model.addConstr( -var_map[v_ij] + var_map[v_jk] - var_map[v_ik] >= -1 ); num_constraints_locally_added++; }
+            if(  s_ij - s_jk - s_ik < -1 ) { model.addConstr(  var_map[v_ij] - var_map[v_jk] - var_map[v_ik] >= -1 ); num_constraints_locally_added++; }
+          }
+        }
+
+
+      num_constraints_added += num_constraints_locally_added;
+      
+      cerr << TS() << "CPI: I=" << n << ": Finished. Obj:"<< model.get(GRB_DoubleAttr_ObjVal) <<": Violated:" << num_constraints_locally_added << " (Total: " << num_constraints_added << ")" << endl;
+
+      f_got_solution = true;
+      
+      repeat( j, p_out_lp->variables.size() )
+        p_out_lp->variables[j].optimized = var_map[j].get(GRB_DoubleAttr_X);
+
+      p_out_lp->optimized_obj = model.get(GRB_DoubleAttr_ObjVal);
       model.reset();
-
-      if( c.timelimit - (getTimeofDaySec()-time_start) > 0 ) {
-        model.getEnv().set( GRB_DoubleParam_TimeLimit, c.timelimit - (getTimeofDaySec()-time_start) );
-        GRBEXECUTE( model.optimize() );
-      }
+      
+      if( 0 == num_constraints_locally_added ) { cerr << TS() << "CPI: I=" << n << ": No violation." << endl; break; }
+      
+      continue;
+      
+    BED:
+      break;
+      
     }
-    signal( SIGINT, catch_int );
+
+    if( !c.isTimeout() ) {
+      cerr << TS() << "CPI: Finished: " << "I=" << n << ", Activated constraints:" << num_constraints_added << endl;
+    } else {
+      cerr << TS() << "CPI: Finished: Timeout: " << "I=" << n << ", Activated constraints:" << num_constraints_added << endl;
+    }
     
   } else {
     signal( SIGINT, _cb_stop_ilp );
     GRBEXECUTE( model.optimize() );
     signal( SIGINT, catch_int );
   }
-
-  // model.computeIIS();
-  // GRBConstr *cnstrs = model.getConstrs();
-
-  // for (int i = 0; i < model.get(GRB_IntAttr_NumConstrs); ++i) {
-  //   if (cnstrs[i].get(GRB_IntAttr_IISConstr) == 1) {
-  //     cout << cnstrs[i].get(GRB_StringAttr_ConstrName) << endl;
-  //   } }
-
-  // delete[] cnstrs;                                                           
   
   if( NULL != p_out_cache ) p_out_cache->elapsed_ilp = getTimeofDaySec() - time_start;
   
   if( c.is_ilp_verbose ) endXMLtag( "ilp-log" );
 
-  if( 0 == model.get( GRB_IntAttr_SolCount ) ) {
+  if( !f_got_solution && 0 == model.get(GRB_IntAttr_SolCount) ) {
+    if( GRB_INFEASIBLE == model.get(GRB_IntAttr_Status) ) {
+      GRBEXECUTE(
+                 model.computeIIS();
+                 GRBConstr *cnstrs = model.getConstrs();
+
+                 repeat(i, (uint_t)model.get(GRB_IntAttr_NumConstrs)) {
+                   if (cnstrs[i].get(GRB_IntAttr_IISConstr) == 1) {
+                     cout << "Infeasible: " << cnstrs[i].get(GRB_StringAttr_ConstrName) << endl;
+                   } }
+                 
+                 delete[] cnstrs;
+                 );
+    }
+        
     p_out_lp->optimized_obj = 0.0;
     
     repeat( i, p_out_lp->variables.size() ) {
-      if( p_out_lp->variables[i].isFixed() ) p_out_lp->variables[i].optimized                = p_out_lp->variables[i].fixed_val;
+      if( p_out_lp->variables[i].isFixed() )                p_out_lp->variables[i].optimized = p_out_lp->variables[i].fixed_val;
       else if( -9999.0 != p_out_lp->variables[i].init_val ) p_out_lp->variables[i].optimized = p_out_lp->variables[i].init_val;
-      else p_out_lp->variables[i].optimized                                                  = p_out_lp->variables[i].lb;
-          
+      else                                                  p_out_lp->variables[i].optimized = p_out_lp->variables[i].lb;
       p_out_lp->optimized_obj += p_out_lp->variables[i].obj_val * p_out_lp->variables[i].optimized;
     }
 
     return NotAvailable;
   }
 
-  if( CuttingPlaneBnB == c.method ) {
-    V(1) cerr << "CPI: Finished: " << "I=" << cb.num_evaluated << endl
-              << "CPI: Finished: Activated constraints: " << cb.num_activated << endl;
+  if( !f_got_solution ) {
+    repeat( j, p_out_lp->variables.size() )
+      p_out_lp->variables[j].optimized = var_map[j].get(GRB_DoubleAttr_X);
+
+    p_out_lp->optimized_obj = model.get(GRB_DoubleAttr_ObjVal);
   }
   
-  /* Update the optimized value based on the solution of LP. */
-  repeat( i, p_out_lp->variables.size() )
-    p_out_lp->variables[i].optimized = var_map[i].get(GRB_DoubleAttr_X);
-
   /* Prohibit to get the optimal solution. */
   // repeat( i, c.k_best ) {
   //   GRBLinExpr expr;
@@ -363,9 +334,11 @@ ilp_solution_type_t function::solveLP_BnB( linear_programming_problem_t *p_out_l
   //   model.optimize();
   // }
   
-  p_out_lp->optimized_obj = model.get(GRB_DoubleAttr_ObjVal);
-
-  return GRB_OPTIMAL == model.get(GRB_IntAttr_Status) ? Optimal : SubOptimal;
+  return c.isTimeout() ? SubOptimal :
+    ((BnB == c.method ?
+     GRB_OPTIMAL == model.get(GRB_IntAttr_Status) :
+     GRB_OPTIMAL == model.get(GRB_IntAttr_Status) || GRB_CUTOFF == model.get(GRB_IntAttr_Status)) ?
+     Optimal : SubOptimal);
   
 }
 
@@ -407,7 +380,7 @@ ilp_solution_type_t function::solveLP_LS( linear_programming_problem_t *p_out_lp
       }
 
       if( p_out_lp->variables[i].ub - p_out_lp->variables[i].lb > 1.0 ) {
-        cerr << p_out_lp->variables[i].ub - p_out_lp->variables[i].lb << endl;
+        cerr << TS() << p_out_lp->variables[i].ub - p_out_lp->variables[i].lb << endl;
         lp_constraint_t con_minmax( "", Range, p_out_lp->variables[i].lb, p_out_lp->variables[i].ub );
         con_minmax.push_back( i, 1.0 );
         p_out_lp->addConstraint( con_minmax );
@@ -459,7 +432,7 @@ ilp_solution_type_t function::solveLP_LS( linear_programming_problem_t *p_out_lp
   try {
     p_model->close();
   } catch( LSException* p_e ) {
-    cerr << p_e->getMessage() << endl;
+    cerr << TS() << p_e->getMessage() << endl;
   }
   
   LSPhase *p_phase = ls.createPhase();
@@ -476,7 +449,7 @@ ilp_solution_type_t function::solveLP_LS( linear_programming_problem_t *p_out_lp
     p_out_lp->variables[i].optimized = 0.0;
     
     repeat( j, var_map[i].size() ) {
-      if( var_map[i].size() > 1 ) cerr << var_map[i][j]->getValue() << endl;
+      if( var_map[i].size() > 1 ) cerr << TS() << var_map[i][j]->getValue() << endl;
       p_out_lp->variables[i].optimized += pow( 2, j ) * var_map[i][j]->getValue();
     }
     
@@ -488,3 +461,35 @@ ilp_solution_type_t function::solveLP_LS( linear_programming_problem_t *p_out_lp
 }
 
 #endif /* #ifdef LOCAL_SOLVER */
+
+
+
+
+
+
+/* GRAVE. */
+    // for( variable_cluster_t::cluster_t::iterator iter_c2v=p_out_cache->evc.clusters.begin(); p_out_cache->evc.clusters.end()!=iter_c2v; ++iter_c2v ) {
+      
+    //   vector<store_item_t> variables( iter_c2v->second.begin(), iter_c2v->second.end() );
+      
+    //   for( uint_t i=0; i<variables.size(); i++ ) {
+    //     for( uint_t j=i+1; j<variables.size(); j++ ) {
+    //       for( uint_t k=j+1; k<variables.size(); k++ ) {
+    //         store_item_t ti = variables[i], tj = variables[j], tk = variables[k];
+    //         int
+    //           v_titj        = _getCorefVar(ti, tj, *p_out_lprel),
+    //           v_tjtk        = _getCorefVar(tj, tk, *p_out_lprel),
+    //           v_titk        = _getCorefVar(ti, tk, *p_out_lprel);
+
+    //         if( c.isTimeout() ) goto BED;
+    //         if( -1 == v_titj || -1 == v_tjtk || -1 == v_titk ) continue;
+
+    //         double s_ij = var_map[v_titj].get(GRB_DoubleAttr_X), s_ik = var_map[v_titk].get(GRB_DoubleAttr_X), s_jk = var_map[v_tjtk].get(GRB_DoubleAttr_X);
+            
+    //         if( -s_ij - s_jk + s_ik < -1 ) { model.addConstr( -var_map[v_titj] - var_map[v_tjtk] + var_map[v_titk] >= -1 ); num_constraints_locally_added++; }
+    //         if( -s_ij + s_jk - s_ik < -1 ) { model.addConstr( -var_map[v_titj] + var_map[v_tjtk] - var_map[v_titk] >= -1 ); num_constraints_locally_added++; }
+    //         if(  s_ij - s_jk - s_ik < -1 ) { model.addConstr(  var_map[v_titj] - var_map[v_tjtk] - var_map[v_titk] >= -1 ); num_constraints_locally_added++; }
+            
+    //       } } }
+    // }
+    

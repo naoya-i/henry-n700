@@ -812,31 +812,38 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
         con_bestlink.push_back( v_coref, 1.0 );
         
         if( LabelGiven == c.objfunc ) {
-          if( !vc_gold.isInSameCluster(t1,t2) && !p_out_lp->variables[ v_coref ].isFixed() ) { p_out_lp->variables[ v_coref ].fixValue(0.0); /*p_out_lp->variables[ v_coref ].obj_val = -9999;*/ }
-          if( vc_gold.isInSameCluster(t1,t2) )                                               { p_out_lp->variables[ v_coref ].fixValue(1.0); /*p_out_lp->variables[ v_coref ].obj_val = 9999;*/ }
+          if( !vc_gold.isInSameCluster(t1,t2) && !p_out_lp->variables[ v_coref ].isFixed() ) { 
+p_out_lp->variables[ v_coref ].fixValue(0.0); 
+//p_out_lp->variables[ v_coref ].obj_val = -9999;
+ }
+          if( vc_gold.isInSameCluster(t1,t2) )                                               { 
+p_out_lp->variables[ v_coref ].fixValue(1.0); 
+//p_out_lp->variables[ v_coref ].obj_val = 9999; 
+}
         }
 
-        if( LossAugmented == c.objfunc && vc_gold.map_v2c.count(t1) > 0 && vc_gold.map_v2c.count(t2) > 0 ) {
-          if( vc_gold.isInSameCluster(t1,t2) ) {
-            factor_t fc_loss( AndFactorTrigger );
-            fc_loss.push_back( v_coref, false );
-            p_out_lp->variables[ fc_loss.apply( p_out_lp, "fc_loss_" + _SC(t1) + _SC(t2) ) ].obj_val = 1.0;
-            V(5) cerr << TS() << "Gold unification: " << _SC(t1) + "=" + _SC(t2) << endl;
-          } else {
-            factor_t fc_loss( AndFactorTrigger );
-            fc_loss.push_back( v_coref );
-            p_out_lp->variables[ fc_loss.apply( p_out_lp, "fc_loss_" + _SC(t1) + _SC(t2) ) ].obj_val = 1.0;
-            V(5) cerr << TS() << "Gold unification: " << _SC(t1) + "!=" + _SC(t2) << endl;
-          }
-        }
+        // if( LossAugmented == c.objfunc && vc_gold.map_v2c.count(t1) > 0 && vc_gold.map_v2c.count(t2) > 0 ) {
+        //   if( vc_gold.isInSameCluster(t1,t2) ) {
+        //     factor_t fc_loss( AndFactorTrigger );
+        //     fc_loss.push_back( v_coref, false );
+        //     p_out_lp->variables[ fc_loss.apply( p_out_lp, "fc_loss_" + _SC(t1) + _SC(t2) ) ].obj_val = 1.0;
+        //     V(5) cerr << TS() << "Gold unification: " << _SC(t1) + "=" + _SC(t2) << endl;
+        //   } else {
+        //     factor_t fc_loss( AndFactorTrigger );
+        //     fc_loss.push_back( v_coref );
+        //     p_out_lp->variables[ fc_loss.apply( p_out_lp, "fc_loss_" + _SC(t1) + _SC(t2) ) ].obj_val = 1.0;
+        //     V(5) cerr << TS() << "Gold unification: " << _SC(t1) + "!=" + _SC(t2) << endl;
+        //   }
+        // }
         
         num_pair++;
       }
 
-      //p_out_lp->addConstraint( con_bestlink );
+      //	  if(LabelGiven != c.objfunc) p_out_lp->addConstraint( con_bestlink );
     }
   }
 
+  num_pair=1;
   repeat(i, p_out_lp->variables.size()) {
     if( 0 == p_out_lp->variables[i].name.find( "fc_loss_") ) p_out_lp->variables[i].obj_val /= num_pair;
   }

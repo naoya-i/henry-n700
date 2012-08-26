@@ -266,12 +266,12 @@ void algorithm::learn( score_function_t *p_out_sfunc, const learn_configuration_
           variable_cluster_t vc_sys, vc_gold;
           foreachc( pairwise_vars_t, iter_t1, cache.lprel.pp2v )
             for( unordered_map<store_item_t, int>::const_iterator iter_t2=iter_t1->second.begin(); iter_t1->second.end()!=iter_t2; ++iter_t2 ) {
-              if( 0.5 < cache.lp.variables[iter_t2->second].optimized ) x_len += 1;
+              if( true || 0.5 < cache.lp.variables[iter_t2->second].optimized ) x_len += 1;
             }
 
           foreachc( pairwise_vars_t, iter_t1, another_cache.lprel.pp2v )
             for( unordered_map<store_item_t, int>::const_iterator iter_t2=iter_t1->second.begin(); iter_t1->second.end()!=iter_t2; ++iter_t2 ) {
-              if( 0.5 < another_cache.lp.variables[iter_t2->second].optimized ) xh_len += 1;
+              if( true || 0.5 < another_cache.lp.variables[iter_t2->second].optimized ) xh_len += 1;
             }
 
           /* Create a weighted difference vector. */
@@ -282,10 +282,12 @@ void algorithm::learn( score_function_t *p_out_sfunc, const learn_configuration_
           // v_current = v_weighted_current;
           // v_correct = v_weighted_correct;
           
+	  //xh_len = x_len;
+
           s_current = score_function_t::getScore( p_out_sfunc->weights, v_current );
           s_correct = score_function_t::getScore( p_out_sfunc->weights, v_correct );
 
-          x_len = s_current+s_correct;
+          x_len  = s_current+s_correct;
           xh_len = s_current+s_correct;
           
           //xh_len += another_cache.pg.nodes.size();
@@ -293,10 +295,10 @@ void algorithm::learn( score_function_t *p_out_sfunc, const learn_configuration_
           function::getVectorIndices( &feature_indices, v_correct );
           function::getVectorIndices( &feature_indices, v_current );
 
-          // for( unordered_set<string>::iterator iter_fi = feature_indices.begin(); feature_indices.end() != iter_fi; ++iter_fi ) {
-          //   if( 1.0 < xh_len ) v_correct[*iter_fi] *= 1.0 / xh_len;
-          //   if( 1.0 < x_len ) v_current[*iter_fi] *= 1.0 / x_len;
-          // }
+          for( unordered_set<string>::iterator iter_fi = feature_indices.begin(); feature_indices.end() != iter_fi; ++iter_fi ) {
+            if( 1.0 < xh_len ) v_correct[*iter_fi] *= 1.0 / xh_len;
+            if( 1.0 < x_len ) v_current[*iter_fi] *= 1.0 / x_len;
+          }
 
           /* Re-calculate ;-) */
           double s_org_current = s_current; s_current = score_function_t::getScore( p_out_sfunc->weights, v_current );

@@ -36,6 +36,7 @@
 #define NotString "!"
 
 #define FnTrainingLabel "label"
+#define PrefixFixedWeight "!"
 
 #define InvalidCutoff     -9999.0
 #define InvalidFixedValue -9999.0
@@ -110,7 +111,7 @@ class random_double_t {
  private:
   double m_value;
  public:
-  inline random_double_t() { m_value = 0; 1; 0.5 * (rand() % 10000) / 10000.0; }
+  inline random_double_t() { m_value = 0; 0.5 * (rand() % 10000) / 10000.0; }
   inline operator double () const { return m_value; }
   inline double operator += ( double other ) { m_value += other; }
   inline double operator = ( double other ) { m_value = other; }
@@ -141,7 +142,7 @@ enum lp_constraint_operator_t { UnderspecifiedCopr, Equal, LessEqual, GreaterEqu
 enum feature_function_t { NodeFeature, EdgeFeature };
 enum inference_result_t { Success, GenerationTimeout, ILPTimeout };
 
-template <class K, class V> V mget( const unordered_map<K,V> &dict, K &key, V def ) {
+template <class K, class V> V mget( const unordered_map<K,V> &dict, K key, V def ) {
   return dict.end() != dict.find(key) ? dict.find(key)->second : def;
 }
 
@@ -1089,7 +1090,7 @@ struct inference_configuration_t {
   double                         loss;
   string                         extension_module;
   weight_vector_t                weights;
-  bool                           f_use_temporal_weights;
+  bool                           f_use_temporal_weights, f_default_weight1;
   score_function_t              *p_sfunc;
   double                         timelimit, nbthreads, timestart;
   uint_t                         depthlimit, max_variable_clusters;
@@ -1107,7 +1108,7 @@ struct inference_configuration_t {
   
   inline inference_configuration_t( score_function_t &s ) :
     ilp(false), proofgraph(false), ignore_weight(false), use_cache(false), is_ilp_verbose(false), show_variable_cluster(false),
-    show_statistics(false), k_best(1), f_use_temporal_weights(false),
+    show_statistics(false), k_best(1), f_use_temporal_weights(false), f_default_weight1(false),
     loss(1.0), p_sfunc( &s ), initial_label_index(99999), output_info(""),
     method(LocalSearch), objfunc(Cost), nbthreads(8),
     cpi_max_iteration(9999), cpi_timelimit(9999)
@@ -1381,8 +1382,9 @@ struct loss_t {
       this->loss = PyFloat_AsDouble( PyTuple_GetItem( p_pyret, 0) );
 
       PyObject *p_pylist_weighting = PyTuple_GetItem(p_pyret, 1);
-      repeat( i, PyList_Size( p_pylist_weighting ) )
+      repeat( i, PyList_Size( p_pylist_weighting ) ) {
         weighting[ PyInt_AsLong( PyTuple_GetItem( PyList_GetItem( p_pylist_weighting, i ), 0 ) ) ] = PyFloat_AsDouble( PyTuple_GetItem( PyList_GetItem( p_pylist_weighting, i ), 1 ) );
+      }
         
       Py_DECREF( p_pyret );
       

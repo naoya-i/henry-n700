@@ -85,6 +85,7 @@ inline string _createSQLquery( unordered_map<int, string> *p_out_vars, const sex
 
 bool function::enumeratePotentialElementalHypotheses( proof_graph_t *p_out_pg, variable_cluster_t *p_out_evc, const logical_function_t &obs, const string &sexp_obs, const knowledge_base_t &kb, const inference_configuration_t &c ) {
 
+  double                   total_observation_cost = 0;
   variable_cluster_t       vc;
   vector<int>              nodes_obs;
   vector<const literal_t*> literals;
@@ -107,6 +108,9 @@ bool function::enumeratePotentialElementalHypotheses( proof_graph_t *p_out_pg, v
     p_out_pg->nodes[ n_obs ].instantiated_by.where = i;
     nodes_obs.push_back( n_obs );
 
+    if(!g_store.isEqual( literals[i]->predicate, "!=" ))
+      total_observation_cost += p_out_pg->nodes[n_obs].lit.wa_number;
+    
     V(4) cerr << TS() << " Input: Type=" << p_out_pg->nodes[ n_obs ].type << ", " << literals[i]->toString() << endl;
   }
 
@@ -149,6 +153,8 @@ bool function::enumeratePotentialElementalHypotheses( proof_graph_t *p_out_pg, v
         repeat( j, PyList_Size(PyTuple_GetItem(PyList_GetItem(pyret.p_pyobj, i), 2)) )
           p_out_pg->addEdge(PyInt_AsLong(PyList_GetItem(PyTuple_GetItem(PyList_GetItem(pyret.p_pyobj, i), 2), j)), hn, "");
         
+        if(ObservableNode == p_out_pg->nodes[n_obs].type) total_observation_cost += p_out_pg->nodes[n_obs].lit.wa_number;
+        
         V(4) cerr << TS() << " Extra input: Type=" << p_out_pg->nodes[ n_obs ].type << ", " << lit.toString() << endl;
         
       }
@@ -156,10 +162,17 @@ bool function::enumeratePotentialElementalHypotheses( proof_graph_t *p_out_pg, v
 
     mypyobject_t::cleanTrashCan();
   }
+
+  /* Make it relative cost. */
+  repeat( i, nodes_obs.size() ) {
+    p_out_pg->nodes[nodes_obs[i]].lit.wa_number /= total_observation_cost;
+    V(4) cerr << TS() << " Revised input: Type=" << p_out_pg->nodes[nodes_obs[i]].type << ", " << p_out_pg->nodes[nodes_obs[i]].lit.toString() << ", " << p_out_pg->nodes[nodes_obs[i]].lit.wa_number << endl;
+  }
   
   repeat( i, nodes_obs.size() ) {
     if( c.isTimeout() ) return false;
     if( ObservableNode != p_out_pg->nodes[ nodes_obs[i] ].type ) continue;
+    if( "" != p_out_pg->nodes[ nodes_obs[i] ].lit.extra && 0 == p_out_pg->nodes[ nodes_obs[i] ].lit.wa_number ) continue;
     if( !instantiateBackwardChainings( p_out_pg, p_out_evc, nodes_obs[i], kb, c ) ) return false;
   }
 
@@ -509,6 +522,7 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
   sparse_vector_t    v_inf, v_minf; v_inf[ "FIXED" ] = 9999.0; v_minf[ "FIXED" ] = -9999.0;
   unordered_map<int, unordered_set<int> > constants_unifiables;
   variable_cluster_t vc_gold;
+  unordered_set<int> vars_unification;
 
   V(1) cerr << TS() << "Processing score function templates..." << endl;
   
@@ -529,10 +543,11 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
         
       repeat( i, PyList_Size(pyret.p_pyobj) ) {
 
-        PyObject        *p_pyfactors = PyTuple_GetItem(PyList_GetItem(pyret.p_pyobj, i), 0), *p_pyfen = PyTuple_GetItem(PyList_GetItem(pyret.p_pyobj, i), 1), *p_pyfev = PyTuple_GetItem(PyList_GetItem(pyret.p_pyobj, i), 2);
+        PyObject        *p_pyfactors     = PyTuple_GetItem(PyList_GetItem(pyret.p_pyobj, i), 0), *p_pyfen = PyTuple_GetItem(PyList_GetItem(pyret.p_pyobj, i), 1), *p_pyfev = PyTuple_GetItem(PyList_GetItem(pyret.p_pyobj, i), 2);
         sparse_vector_t  ve;
         vector<string>   signature;
         factor_t         fc( OrFactorTrigger );
+        bool             is_vua_included = false;
 
         repeat( j, PyList_Size(p_pyfactors) ) {
           factor_t       fc_cnf(AndFactorTrigger);
@@ -557,7 +572,7 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
             case 'c': {
               char var1[32], var2[32]; sscanf( fc_name.substr(1).c_str(), "%s %s", var1, var2 );
               int v_coref = _createCorefVar( p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, _VC(var1), _VC(var2) );
-              if( -1 != v_coref ) { fc_cnf.push_back( v_coref, !f_negation ); local_signature.push_back(::toString(f_negation ? "%s!=%s" : "%s=%s", var1, var2)); }
+              if( -1 != v_coref ) { fc_cnf.push_back( v_coref, !f_negation ); local_signature.push_back(::toString(f_negation ? "%s!=%s" : "%s=%s", var1, var2)); is_vua_included = true; }
               break; }
             default:
               W( "Unknown factor: " << fc_name );
@@ -570,8 +585,8 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
           unordered_map<string, int>::iterator iter_fcm        = fc_map.find(signature_fc);
           int                                  v_fc            = -1;
           
-          if( fc_map.end() == iter_fcm ) { v_fc = fc_cnf.apply(p_out_lp, signature_fc, false, false); fc_map[signature_fc] = v_fc; }
-          else v_fc         = iter_fcm->second;
+          if(fc_map.end() == iter_fcm) { v_fc = fc_cnf.apply(p_out_lp, signature_fc, false, false); fc_map[signature_fc] = v_fc; }
+          else v_fc        = iter_fcm->second;
 
           signature.push_back(signature_fc);
           fc.push_back(v_fc);
@@ -579,6 +594,7 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
 
         /* MAKE SURE THAT WE DON'T HAVE OVERLAP. */
         vector<int>                          sorted_triggers = fc.triggers; sort(sorted_triggers.begin(), sorted_triggers.end());
+        string                               feature_element_name(PyString_AsString(p_pyfen));
         string                               signature_fc    = "ufc_"+::join(signature.begin(), signature.end(), "/");
         unordered_map<string, int>::iterator iter_fcm        = fc_map.find(signature_fc);
         int                                  v_fc            = -1;
@@ -586,9 +602,11 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
           
         if( fc_map.end() == iter_fcm ) { v_fc = fc.apply(p_out_lp, signature_fc, f_prohibiting, false); fc_map[signature_fc] = v_fc; }
         else v_fc         = iter_fcm->second;
-          
+
+        if(is_vua_included && 0 != feature_element_name.find(PrefixFixedWeight)) vars_unification.insert(v_fc);
+        
         if( f_prohibiting || -1 != v_fc ) {
-          V(5) cerr << TS() << "New factor: " << ::join(signature.begin(), signature.end(), "/") << ":" << PyString_AsString(p_pyfen) << ":" << PyFloat_AsDouble(p_pyfev) << endl;
+          V(5) cerr << TS() << "New factor: " << ::join(signature.begin(), signature.end(), "/") << ":" << PyString_AsString(p_pyfen) << ":" << PyFloat_AsDouble(p_pyfev) << ":" << is_vua_included << endl;
           p_out_lp->variables[ v_fc ].name += "/" + string(PyString_AsString(p_pyfen));
         }
         if( !f_prohibiting && -1 != v_fc ) { p_out_lprel->feature_vector[ v_fc ][ PyString_AsString(p_pyfen) ] += PyFloat_AsDouble(p_pyfev); }
@@ -773,15 +791,6 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
     
   }
 
-  /* Set the feature vector. */
-  for( unordered_map<int, sparse_vector_t>::iterator iter_o2v=p_out_lprel->feature_vector.begin(); p_out_lprel->feature_vector.end() != iter_o2v; ++iter_o2v ) {
-    for( sparse_vector_t::iterator iter_v=iter_o2v->second.begin(); iter_o2v->second.end()   != iter_v; ++iter_v ) {
-      if( "FIXED" == iter_v->first ) p_out_lp->variables[ iter_o2v->first ].obj_val  = iter_v->second;
-      else                           p_out_lp->variables[ iter_o2v->first ].obj_val += (c.ignore_weight ? 1.0 : (c.f_use_temporal_weights ? c.weights[ iter_v->first ] : c.p_sfunc->weights[ iter_v->first ])) * iter_v->second;
-      p_out_lprel->input_vector[ iter_v->first ]+= iter_v->second;
-    }
-  }
-        
   /* Preparing for augmenting the loss. */
   if( LossAugmented == c.objfunc ) {
     vector<const literal_t*>  y_literals;
@@ -806,12 +815,14 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
       repeatf( j, i+1, variables.size() ) {
         if( c.isTimeout() ) return false;
         
+        num_pair++;
+        
         store_item_t t1 = variables[i], t2 = variables[j]; if( t1 > t2 ) swap(t1, t2);
         int v_coref = _createCorefVar( p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, t1, t2, false );
 
         con_bestlink.push_back( v_coref, 1.0 );
         
-        if( LabelGiven == c.objfunc ) {
+        if( LabelGiven == c.objfunc && 0 < vc_gold.variables.count(t1) && 0 < vc_gold.variables.count(t2)) {
           if( !vc_gold.isInSameCluster(t1,t2) && !p_out_lp->variables[ v_coref ].isFixed() ) { 
 p_out_lp->variables[ v_coref ].fixValue(0.0); 
 //p_out_lp->variables[ v_coref ].obj_val = -9999;
@@ -836,16 +847,42 @@ p_out_lp->variables[ v_coref ].fixValue(1.0);
         //   }
         // }
         
-        num_pair++;
       }
 
       //	  if(LabelGiven != c.objfunc) p_out_lp->addConstraint( con_bestlink );
     }
   }
 
-  num_pair=1;
+  /* Make the factors that include variable unification assumptions relative value. */
+  foreach(unordered_set<int>, iter_vua, vars_unification) {
+    foreach(sparse_vector_t, iter_v, p_out_lprel->feature_vector[*iter_vua]) {
+      if(0 == iter_v->first.find(PrefixFixedWeight)) continue;
+      iter_v->second /= num_pair;
+    } }
+
+  //num_pair=1;
   repeat(i, p_out_lp->variables.size()) {
     if( 0 == p_out_lp->variables[i].name.find( "fc_loss_") ) p_out_lp->variables[i].obj_val /= num_pair;
+  }
+
+  /* Set the feature vector. */
+  for( unordered_map<int, sparse_vector_t>::iterator iter_o2v=p_out_lprel->feature_vector.begin(); p_out_lprel->feature_vector.end() != iter_o2v; ++iter_o2v ) {
+    for( sparse_vector_t::iterator iter_v=iter_o2v->second.begin(); iter_o2v->second.end()   != iter_v; ++iter_v ) {
+      
+      cerr << "WAO:" << iter_v->first << ":" << iter_v->second << endl;
+      
+      if(0 == iter_v->first.find(PrefixFixedWeight)) {
+        p_out_lp->variables[ iter_o2v->first ].obj_val += iter_v->second;
+        
+        if(!c.ignore_weight) { /* Make sure the weight has a value 1. */
+          if(c.f_use_temporal_weights) c.weights[iter_v->first] = 1.0;
+          else                         c.p_sfunc->weights[iter_v->first] = 1.0;
+        }
+      } else
+        p_out_lp->variables[ iter_o2v->first ].obj_val += (c.ignore_weight ? 1.0 : (c.f_use_temporal_weights ? c.weights[ iter_v->first ] : c.p_sfunc->weights[ iter_v->first ])) * iter_v->second;
+      
+      p_out_lprel->input_vector[ iter_v->first ]+= iter_v->second;
+    }
   }
 
   if( BnB == c.method || LocalSearch == c.method ) {
@@ -1311,7 +1348,7 @@ p_out_lp->variables[ v_coref ].fixValue(1.0);
   for( unordered_map<int, sparse_vector_t>::iterator iter_o2v=p_out_lprel->feature_vector.begin(); p_out_lprel->feature_vector.end() != iter_o2v; ++iter_o2v ) {
     for( sparse_vector_t::iterator iter_v=iter_o2v->second.begin(); iter_o2v->second.end()   != iter_v; ++iter_v ) {
       if( "FIXED" == iter_v->first ) p_out_lp->variables[ iter_o2v->first ].obj_val  = iter_v->second;
-      else                           p_out_lp->variables[ iter_o2v->first ].obj_val += (c.ignore_weight ? 1.0 : c.p_sfunc->weights[ iter_v->first ]) * iter_v->second;
+      else                           p_out_lp->variables[ iter_o2v->first ].obj_val += (c.ignore_weight ? 1.0 : (c.p_sfunc->weights[ iter_v->first ]) * iter_v->second);
     }
   }
   
@@ -1366,24 +1403,27 @@ void function::convertLPToHypothesis( logical_function_t *p_out_h, sparse_vector
   
   if( NULL != p_out_fv ) {
     repeat( i, cache.lp.variables.size() ) {
-      if( 0.5 > cache.lp.variables[i].optimized ) {
+      if( 0.5 < cache.lp.variables[i].optimized ) {
         if( cache.lprel.feature_vector.end() != cache.lprel.feature_vector.find(i) ) {
-          foreachc( sparse_vector_t, iter_fv, cache.lprel.feature_vector.find(i)->second )
-            if( 0 == iter_fv->first.find( "NOT" ) ) (*p_out_fv)[ iter_fv->first ] += (f_vector_weighting ? mget(cache.loss.weighting, (int&)i, 1.0) : 1.0) * iter_fv->second;
+          foreachc( sparse_vector_t, iter_fv, cache.lprel.feature_vector.find(i)->second ) {
+            double f_coefficient = 1.0;
+            if(f_vector_weighting && cache.loss.weighting.find(i) != cache.loss.weighting.end())
+              f_coefficient = cache.loss.weighting.find(i)->second;
+            
+            (*p_out_fv)[ iter_fv->first ] += f_coefficient * iter_fv->second;
+          }
         }
-        
-        continue;
-      }
-      if( cache.lprel.feature_vector.end() != cache.lprel.feature_vector.find(i) ) {
-        foreachc( sparse_vector_t, iter_fv, cache.lprel.feature_vector.find(i)->second )
-          if( 0 != iter_fv->first.find( "NOT" ) ) (*p_out_fv)[ iter_fv->first ] += (f_vector_weighting ? mget(cache.loss.weighting, (int&)i, 1.0) : 1.0) * iter_fv->second;
 
       }
+      // if( cache.lprel.feature_vector.end() != cache.lprel.feature_vector.find(i) ) {
+      //   foreachc( sparse_vector_t, iter_fv, cache.lprel.feature_vector.find(i)->second )
+      //     if( 0 != iter_fv->first.find( "NOT" ) ) (*p_out_fv)[ iter_fv->first ] += (f_vector_weighting ? mget(cache.loss.weighting, (int&)i, 1.0) : 1.0) * iter_fv->second;
+      // }
 
-      if( f_vector_weighting ) {
-        for( unordered_map<int, double>::const_iterator iter=cache.loss.weighting.begin(); iter!=cache.loss.weighting.begin(); iter++ )
-          cerr << iter->first << ":" << iter->second << endl;
-      }
+      // if( f_vector_weighting ) {
+      //   for( unordered_map<int, double>::const_iterator iter=cache.loss.weighting.begin(); iter!=cache.loss.weighting.(); iter++ )
+      //     cerr << iter->first << ":" << iter->second << endl;
+      // }
       
     }
   }

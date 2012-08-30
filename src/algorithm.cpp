@@ -282,13 +282,14 @@ void algorithm::learn( score_function_t *p_out_sfunc, const learn_configuration_
           // v_current = v_weighted_current;
           // v_correct = v_weighted_correct;
           
-	  //xh_len = x_len;
+	  // xh_len = x_len;
 
-          s_current = score_function_t::getScore( p_out_sfunc->weights, v_current );
-          s_correct = score_function_t::getScore( p_out_sfunc->weights, v_correct );
-
-          x_len  = s_current+s_correct;
-          xh_len = s_current+s_correct;
+          // s_current = score_function_t::getScore( p_out_sfunc->weights, v_current );
+          // s_correct = score_function_t::getScore( p_out_sfunc->weights, v_correct );
+          xh_len = 0; x_len = 0;
+          
+          // x_len  = s_current+s_correct;
+          // xh_len = s_current+s_correct;
           
           //xh_len += another_cache.pg.nodes.size();
           
@@ -334,12 +335,12 @@ void algorithm::learn( score_function_t *p_out_sfunc, const learn_configuration_
 
         double tau, TauTolerance = c.E * 0.1;
 
-        if( TauTolerance > fabs(numerator) )   numerator = numerator >= 0 ? TauTolerance : -TauTolerance;
+        if(TauTolerance > fabs(numerator))   numerator = numerator >= 0 ? TauTolerance : -TauTolerance;
 
-        ss << toString( "<update-coefficient numerator=\"%f\" denominator=\"%f\" />", numerator, denominator ) << endl;
+        ss << toString("<update-coefficient numerator=\"%f\" denominator=\"%f\" />", numerator, denominator) << endl;
         
-        if( 0.0 == denominator ) tau = 0.0;
-        else                     tau = min( c.C, numerator / denominator );
+        if(0.0 == denominator) tau = 0.0;
+        else                   tau = min( c.C, numerator / denominator );
 
         function::beginXMLtag( "feature-vector-diff", "", &ss );
 
@@ -349,10 +350,6 @@ void algorithm::learn( score_function_t *p_out_sfunc, const learn_configuration_
         
         function::endXMLtag( "feature-vector-diff", &ss );      
       
-        if( 0.0 == tau ) { ss << toString( "<update loss=\"%f\" coefficient=\"0\" />", cache.loss.loss ) << endl; function::endXMLtag( "training", &ss );
-          (*g_p_out) << ss.str() << endl;
-          continue; }
-
         function::beginXMLtag( "update", toString("loss=\"%f\" coefficient=\"%f\" vector-diff=\"%f\">", cache.loss.loss, tau, denominator), &ss );
       
         function::beginXMLtag( "loss", "", &ss );
@@ -364,12 +361,11 @@ void algorithm::learn( score_function_t *p_out_sfunc, const learn_configuration_
         function::beginXMLtag( "weight-vector", "", &ss );
         for( unordered_set<string>::iterator iter_fi = feature_indices.begin(); feature_indices.end() != iter_fi; ++iter_fi ) {
           string j = *iter_fi;
-          if( 0 != v_correct[j] - v_current[j] ) {
+          if(0 == j.find(PrefixFixedWeight)) continue; /* Fixed weight. */
+          if(0 != v_correct[j] - v_current[j]) {
             ss << toString("<element name=\"%s\">%f -> %f</element>", j.c_str(), p_out_sfunc->weights[j], p_out_sfunc->weights[j] + tau * (v_correct[j] - v_current[j])) << endl;
             p_out_sfunc->weights[j] += tau * (v_correct[j] - v_current[j]);
-
           }
-        
         }
         function::endXMLtag( "weight-vector", &ss );
 
@@ -574,7 +570,6 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
             (*p_out_pckb)[ lf.branches[1].branches[0].lit.predicate ][ lf.branches[1].branches[0].lit.terms.size() ].push_back( sr.stack.toString() );
             f_kb_modified = true;
           }
-          
         }
       }
 
@@ -807,7 +802,7 @@ bool _moduleLearn( command_option_t &cmd, vector<string> &args ) {
   _moduleProcessInferOptions( &c.ci, cmd );
 
   if( !has_key( cmd, 'C' ) ) cmd[ 'C' ] = "1.0";
-  if( !has_key( cmd, 'S' ) ) cmd[ 'S' ] = "10";
+  if( !has_key( cmd, 'S' ) ) cmd[ 'S' ] = "1";
   if( !has_key( cmd, 'N' ) ) cmd[ 'N' ] = "9999";
   if( !has_key( cmd, 'E' ) ) cmd[ 'E' ] = "10e-05";
   

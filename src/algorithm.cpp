@@ -102,7 +102,7 @@ inference_result_t algorithm::infer( logical_function_t *p_out_best_h, sparse_ve
 
   sparse_vector_t fv;
   function::convertLPToHypothesis( p_out_best_h, &fv, *p_out_cache );
-  p_out_cache->loss.setLoss( c.training_instance, *p_out_best_h, p_out_cache->lprel, p_out_cache->lp.optimized_obj );
+  p_out_cache->loss.setLoss(c.training_instance, *p_out_best_h, p_out_cache->lprel, p_out_cache->lp.optimized_obj);
   p_out_cache->loss.minimum_loss = p_out_cache->loss.loss;
 
   if( NULL != p_out_fv ) (*p_out_fv) = fv;
@@ -122,6 +122,28 @@ inference_result_t algorithm::infer( logical_function_t *p_out_best_h, sparse_ve
     }
     
     (*p_out) << "</score-function>" << endl;
+  }
+
+  if(c.isAxiomOutput()) {
+    (*p_out) << "<instantiated-axioms>" << endl;
+
+    foreach(unordered_set<string>, i, p_out_cache->pg.instantiated_axioms)
+      (*p_out) << "<axiom>" << *i << "</axiom>" << endl;
+    
+    (*p_out) << "</instantiated-axioms>" << endl;
+  }
+
+  if( g_ext.isFunctionDefined( "cbPostprocess" ) ) {
+    (*p_out) << "<post-process>" << endl;
+    mypyobject_t::buyTrashCan();
+
+    external_module_context_t emc = {&p_out_cache->pg, NULL, &c};
+    mypyobject_t pycon(PyCapsule_New( (void*)&emc, NULL, NULL));
+    mypyobject_t pyarg(Py_BuildValue("(O)", pycon.p_pyobj));
+    mypyobject_t pyret(g_ext.call( "cbPostprocess", pyarg.p_pyobj ));
+    
+    mypyobject_t::cleanTrashCan();
+    (*p_out) << "</post-process>" << endl;
   }
   
   return ret;
@@ -185,7 +207,7 @@ void algorithm::learn( score_function_t *p_out_sfunc, const learn_configuration_
         function::beginXMLtag( "training", "instance=\"" + t[i].name + "\"", &ss );
 
         /* I) Predict! */
-        function::beginXMLtag( "current-prediction", "", &ss );
+        function::beginXMLtag( "current-prediction", "gold-structure=\""+ t[i].y_lf.toString() +"\"", &ss );
       
         /* arg max_{x_i, y^, h^}. */
         inference_configuration_t ci    = c.ci;
@@ -201,6 +223,7 @@ void algorithm::learn( score_function_t *p_out_sfunc, const learn_configuration_
         ci.training_instance      = t[i];
         ci.objfunc                = LossAugmented;
         ci.sol_cache              = sol_cache[i];
+        ci.target_name            = t[i].name;
         
         inference_result_t ret = infer( &h_current, &v_current, &cache, NULL, ci, t[i].x, t[i].x_sexp, kb, true, p_out_sfunc->weights, &ss );
 
@@ -229,7 +252,11 @@ void algorithm::learn( score_function_t *p_out_sfunc, const learn_configuration_
       
         ci.sol_cache         = sol_cache[i];
         
-        if( 0.0 == cache.loss.loss ) { ss << "<update loss=\"0\" coefficient=\"0\" />" << endl; function::endXMLtag( "training", &ss );
+        if( 0.0 == cache.loss.loss ) {
+          cerr << TS() << "No loss!" << endl;
+          ss << "<update loss=\"0\" coefficient=\"0\" />" << endl;
+          function::endXMLtag( "training", &ss );
+          num_actually_trained++;
           (*g_p_out) << ss.str() << endl;
           continue; }
 
@@ -244,9 +271,10 @@ void algorithm::learn( score_function_t *p_out_sfunc, const learn_configuration_
       
           lp_inference_cache_t another_cache( ci );
           ci.objfunc             = LabelGiven;
-          //ci.method              = BnB;
+          //ci.method            = BnB;
           //ci.use_cache         = true;
           ci.initial_label_index = t[i].x.branches.size();
+          ci.target_name         = t[i].name;
 
           logical_function_t       x_prime = t[i].x;
       
@@ -259,8 +287,12 @@ void algorithm::learn( score_function_t *p_out_sfunc, const learn_configuration_
 
           total_minimum_loss += another_cache.loss.loss;
 
-          if( cache.loss.loss == another_cache.loss.loss ) { ss << toString("<update loss=\"%f\" coefficient=\"0\" />", cache.loss.loss) << endl; function::endXMLtag( "training", &ss );
+          if( cache.loss.loss == another_cache.loss.loss ) {
+            cerr << TS() << "Minimum loss reached." << endl;
+            ss << toString("<update loss=\"%f\" coefficient=\"0\" />", cache.loss.loss) << endl;
+            function::endXMLtag( "training", &ss );
             (*g_p_out) << ss.str() << endl;
+            num_actually_trained++;
             continue; }
 
           variable_cluster_t vc_sys, vc_gold;
@@ -284,8 +316,8 @@ void algorithm::learn( score_function_t *p_out_sfunc, const learn_configuration_
           
 	  // xh_len = x_len;
 
-          // s_current = score_function_t::getScore( p_out_sfunc->weights, v_current );
-          // s_correct = score_function_t::getScore( p_out_sfunc->weights, v_correct );
+          s_current = score_function_t::getScore( p_out_sfunc->weights, v_current );
+          s_correct = score_function_t::getScore( p_out_sfunc->weights, v_correct );
           xh_len = 0; x_len = 0;
           
           // x_len  = s_current+s_correct;
@@ -461,8 +493,10 @@ void algorithm::learn( score_function_t *p_out_sfunc, const learn_configuration_
     p_out_sfunc->weights = weight_vector_t();
     
     repeat( i, results.size() )
-      for( weight_vector_t::iterator iter_fi = results[i].first.begin(); results[i].first.end() != iter_fi; ++iter_fi )
-        p_out_sfunc->weights[iter_fi->first] += (results[i].second/num_actually_trained) * iter_fi->second;
+      for( weight_vector_t::iterator iter_fi = results[i].first.begin(); results[i].first.end() != iter_fi; ++iter_fi ) {
+        if(0 == iter_fi->first.find(PrefixFixedWeight)) p_out_sfunc->weights[iter_fi->first] = 1;
+        else                                            p_out_sfunc->weights[iter_fi->first] += (results[i].second/num_actually_trained) * iter_fi->second;
+      }
     
     /* OUTPUT THE CURRENT MODEL. */
     function::beginXMLtag( "model" );
@@ -631,7 +665,7 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
           if( NULL != p_out_t ) p_out_t->push_back( td );
 
         } else if( "infer" == cmd['m'] ) {
-
+          
           cerr << endl;
           _N( " * Target: " << the_name );
           
@@ -641,6 +675,7 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
 
           (*g_p_out) << "<result-inference target=\"" << (-1 != i_name ? sr.stack.children[i_name]->children[1]->getString() : "") << "\">" << endl;
 
+          p_out_ic->target_name       = the_name;
           p_out_ic->training_instance = td;
           
           function::enumerateConstatns( &p_out_kb->constants, obs );

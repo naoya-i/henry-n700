@@ -5,6 +5,7 @@ from collections import defaultdict
 import argparse
 import sys, re
 
+n_lfc = 0
 
 def main():
 	parser = argparse.ArgumentParser( description="Inference visualization script for Henry-N700." )
@@ -16,6 +17,8 @@ def main():
 
 	pa = parser.parse_args()
 
+	global n_lfc
+	
 	for f in pa.input:
 		t			= etree.parse( open(f) if "-" != f else sys.stdin )
 		n_lfc = 0
@@ -176,6 +179,8 @@ def _outputDot(t, pg, pa):
 	obs_nodes = []
 	other_nodes = []
 	is_explained = {}
+
+	global n_lfc
 
 	for lit in pg.xpath( "./literal" ):
 

@@ -114,6 +114,12 @@ bool function::enumeratePotentialElementalHypotheses( proof_graph_t *p_out_pg, v
     V(4) cerr << TS() << " Input: Type=" << p_out_pg->nodes[ n_obs ].type << ", " << literals[i]->toString() << endl;
   }
 
+  /* Make it relative cost. */
+  repeat( i, nodes_obs.size() ) {
+    p_out_pg->nodes[nodes_obs[i]].lit.wa_number /= total_observation_cost;
+    V(4) cerr << TS() << " Revised input: Type=" << p_out_pg->nodes[nodes_obs[i]].type << ", " << p_out_pg->nodes[nodes_obs[i]].lit.toString() << ", " << p_out_pg->nodes[nodes_obs[i]].lit.wa_number << endl;
+  }
+  
   if( g_ext.isFunctionDefined( "cbPreprocess" ) ) {
     mypyobject_t::buyTrashCan();
 
@@ -143,6 +149,7 @@ bool function::enumeratePotentialElementalHypotheses( proof_graph_t *p_out_pg, v
         p_out_pg->nodes[ n_obs ].obs_node              = n_parent == -1 ? n_obs : n_parent;
         p_out_pg->nodes[ n_obs ].instantiated_by.axiom = ""; //sexp_obs;
         p_out_pg->nodes[ n_obs ].instantiated_by.where = i;
+        p_out_pg->nodes[ n_obs ].lit.wa_number         = PyFloat_AsDouble(PyTuple_GetItem(PyList_GetItem(pyret.p_pyobj, i), 3));
 
         if(0 == parents.size())
           nodes_obs.push_back( n_obs );
@@ -161,12 +168,6 @@ bool function::enumeratePotentialElementalHypotheses( proof_graph_t *p_out_pg, v
     }
 
     mypyobject_t::cleanTrashCan();
-  }
-
-  /* Make it relative cost. */
-  repeat( i, nodes_obs.size() ) {
-    p_out_pg->nodes[nodes_obs[i]].lit.wa_number /= total_observation_cost;
-    V(4) cerr << TS() << " Revised input: Type=" << p_out_pg->nodes[nodes_obs[i]].type << ", " << p_out_pg->nodes[nodes_obs[i]].lit.toString() << ", " << p_out_pg->nodes[nodes_obs[i]].lit.wa_number << endl;
   }
   
   repeat( i, nodes_obs.size() ) {
@@ -220,7 +221,6 @@ bool function::instantiateBackwardChainings( proof_graph_t *p_out_pg, variable_c
   
   while( getline( iss_axiom_set, axiom, '\t' ) ) {
 
-    vector<int>   additional_obs;
     istringstream iss_axiom( axiom );
     V(5) cerr << TS() << log_head << "instantiate: " << axiom << " for " << endl;
     p_out_pg->instantiated_axioms.insert( axiom );
@@ -246,14 +246,17 @@ bool function::instantiateBackwardChainings( proof_graph_t *p_out_pg, variable_c
       }
 
       /* If there are multiple literals in RHS, ...  */
-      unifier_t theta;
+      vector<pair<vector<literal_t>,vector<int> > > rhs_collections;
       
       if( Literal != lf.branches[1].opr ) { if( lf.branches[1].branches.size() > 1 ) {
-          string        query    = _createSQLquery( NULL, lf.branches[1], true ); 
-          sqlite3_stmt *p_stmt   = NULL;
-          char         *p_val    = NULL;
-          uint_t        num_cols = 0;
-          bool          f_found  = false;
+          /* Multiple RHS literals. */
+          string             query    = _createSQLquery( NULL, lf.branches[1], true ); 
+          sqlite3_stmt      *p_stmt   = NULL;
+          char              *p_val    = NULL;
+          uint_t             num_cols = 0;
+          unifier_t          theta;
+          vector<int>        rhs_candidates;
+          vector<literal_t>  rhs_literals;
 
           if( SQLITE_OK != sqlite3_prepare_v2(p_out_pg->p_db, query.c_str(), -1, &p_stmt, 0) ) { E( "Invalid query: " << query.c_str() ); continue; }
           if( 0 == (num_cols = sqlite3_column_count(p_stmt)) ) sqlite3_finalize(p_stmt);
@@ -262,117 +265,150 @@ bool function::instantiateBackwardChainings( proof_graph_t *p_out_pg, variable_c
               repeat( k, lf.branches[1].branches.size() ) {
                 if( NULL != (p_val = (char *)sqlite3_column_text(p_stmt, (MaxBasicProp+MaxArguments)*k)) ) {
                   if( !getMGU( &theta, lf.branches[1].branches[k].lit, p_out_pg->nodes[ atoi(p_val) ].lit ) ) goto BED;
-                  additional_obs.push_back( atoi(p_val) );
+                  rhs_candidates.push_back( atoi(p_val) );
+                  rhs_literals.push_back(lf.branches[1].branches[k].lit);
                 }
-              } f_found = true; break;
+              }
+
+              {
+                unordered_set<int> aobss(rhs_candidates.begin(), rhs_candidates.end());
+                if(aobss.size() != rhs_candidates.size()) goto BED;
+              }
+
+              rhs_collections.push_back(make_pair(rhs_literals, rhs_candidates));
               
             BED:
-              theta = unifier_t(); additional_obs.clear();
+              theta = unifier_t(); rhs_candidates.clear(); rhs_literals.clear();
               continue;
             }
 
           }
 
-          if( !f_found ) continue;
         } else {
-          if( !getMGU( &theta, lf.branches[1].branches[0].lit, p_out_pg->nodes[ n_obs ].lit ) ) continue;
+          /* Single RHS literal. */
+          vector<int> rhs_single; vector<literal_t> rhs_lf;
+          rhs_single.push_back(n_obs); rhs_lf.push_back(lf.branches[1].branches[0].lit);
+          rhs_collections.push_back(make_pair(rhs_lf,rhs_single));
         }
         
-          } else {
-      
+      } else {
+        /* Single RHS literal. */
+        vector<int> rhs_single; vector<literal_t> rhs_lf;
+        rhs_single.push_back(n_obs); rhs_lf.push_back(lf.branches[1].lit);
+        rhs_collections.push_back(make_pair(rhs_lf,rhs_single));
+      }
+
+      repeat(i, rhs_collections.size()) {
+        unifier_t theta;
+        bool      f_inc = false;
+
         /* Produce substitution. */
-        if( !getMGU( &theta, lf.branches[1].lit, p_out_pg->nodes[ n_obs ].lit ) ) continue;
+        repeat(j, rhs_collections[i].first.size()) {
+          V(5) cerr << TS() << rhs_collections[i].first[j].toString() << "~" << p_out_pg->nodes[rhs_collections[i].second[j]].toString() << endl;
+          if( !getMGU( &theta, rhs_collections[i].first[j], p_out_pg->nodes[rhs_collections[i].second[j]].lit ) ) { f_inc = true; }
+        }
 
-      }
+        if(f_inc) continue;
+
+        V(5) cerr << TS() << theta.toString() << endl;
         
-      /* For each literal, */
-      vector<literal_t> lhs_literals;
+        /* For each literal, */
+        vector<literal_t> lhs_literals;
 
-      if( Literal == lf.branches[0].opr )
-        lhs_literals.push_back( lf.branches[0].lit );
-      else {
-        for( uint_t j=0; j<lf.branches[0].branches.size(); j++ )
-          lhs_literals.push_back( lf.branches[0].branches[j].lit );
-      }
+        if( Literal == lf.branches[0].opr )
+          lhs_literals.push_back( lf.branches[0].lit );
+        else {
+          for( uint_t j=0; j<lf.branches[0].branches.size(); j++ )
+            lhs_literals.push_back( lf.branches[0].branches[j].lit );
+        }
 
-      /* Check if this lhs matches the condition stated by the given label. */
-      if( LabelGiven == c.objfunc ) {
-        bool f_prohibited = false;
+        /* Check if this lhs matches the condition stated by the given label. */
+        if( LabelGiven == c.objfunc ) {
+          bool f_prohibited = false;
         
-        //cerr << TS() << c.training_instance.y_lf.toString() << endl;
-        repeat( j, c.training_instance.y_lf.branches.size() ) {
-          if( NotOperator != c.training_instance.y_lf.branches[j].opr ) continue;
+          //cerr << TS() << c.training_instance.y_lf.toString() << endl;
+          repeat( j, c.training_instance.y_lf.branches.size() ) {
+            if( NotOperator != c.training_instance.y_lf.branches[j].opr ) continue;
 
-          repeat( k, lhs_literals.size() ) {
-            if( c.training_instance.y_lf.branches[j].branches[0].lit.predicate == lhs_literals[k].predicate ) { f_prohibited = true; break; }
+            repeat( k, lhs_literals.size() ) {
+              if( c.training_instance.y_lf.branches[j].branches[0].lit.predicate == lhs_literals[k].predicate ) { f_prohibited = true; break; }
+            }
           }
+
+          if( f_prohibited ) continue;
         }
 
-        if( f_prohibited ) continue;
-      }
-
-      /* Perform backward-chaining. */
-      vector<int> backchained_literals;
+        /* Perform backward-chaining. */
+        vector<int> backchained_literals;
         
-      for( uint_t j=0; j<lhs_literals.size(); j++ ) {
+        for( uint_t j=0; j<lhs_literals.size(); j++ ) {
 
-        literal_t &lit = lhs_literals[j];
+          literal_t &lit = lhs_literals[j];
 
-        /* Issue unknown variables */
-        for( uint_t k=0; k<lit.terms.size(); k++ )
-          if( !theta.isApplied( lit.terms[k] ) ) theta.add( lit.terms[k], g_store.issueUnknown() );
+          /* Issue unknown variables */
+          for( uint_t k=0; k<lit.terms.size(); k++ )
+            if( !theta.isApplied( lit.terms[k] ) ) theta.add( lit.terms[k], g_store.issueUnknown() );
           
-        theta.apply( &lit );
+          theta.apply( &lit );
 
-        int         n_backchained;
+          int         n_backchained;
 
-        /* If the completely same node is found, then recycle it. */
-        vector<int> recycles;
+          /* If the completely same node is found, then recycle it. */
+          vector<int> recycles;
 
-        if( false ) {
-        // if( p_out_pg->getNode( &recycles, lit ) ) {
+          if( false ) {
+            // if( p_out_pg->getNode( &recycles, lit ) ) {
           
-          n_backchained = recycles[0];
-          p_out_pg->nodes[ n_backchained ].axiom_used.insert( p_out_pg->nodes[ n_obs ].axiom_used.begin(), p_out_pg->nodes[ n_obs ].axiom_used.end() );
-          p_out_pg->nodes[ n_backchained ].axiom_used.insert( axiom_str );
-          p_out_pg->nodes[ n_backchained ].nodes_appeared.insert( n_obs ); repeat(i, additional_obs.size()) p_out_pg->nodes[ n_backchained ].nodes_appeared.insert(additional_obs[i]);
-          p_out_pg->nodes[ n_backchained ].parent_node.insert( n_obs );
+            n_backchained = recycles[0];
+            p_out_pg->nodes[n_backchained].axiom_used.insert( p_out_pg->nodes[n_obs].axiom_used.begin(), p_out_pg->nodes[n_obs].axiom_used.end() );
+            p_out_pg->nodes[n_backchained].axiom_used.insert( axiom_str );
+            p_out_pg->nodes[n_backchained].nodes_appeared.insert( n_obs );
+            p_out_pg->nodes[n_backchained].nodes_appeared.insert(rhs_collections[i].second.begin(), rhs_collections[i].second.end());
+            p_out_pg->nodes[n_backchained].parent_node.insert( n_obs );
           
-        } else {
+          } else {
 
-          n_backchained = p_out_pg->addNode( lit, HypothesisNode, n_obs );
+            n_backchained = p_out_pg->addNode( lit, HypothesisNode, n_obs );
         
-          /* Set the node parameters. */
-          p_out_pg->nodes[ n_backchained ].depth                  = p_out_pg->nodes[ n_obs ].depth + 1;
-          p_out_pg->nodes[ n_backchained ].obs_node               = p_out_pg->nodes[ n_obs ].obs_node;
-          p_out_pg->nodes[ n_backchained ].parent_node.insert( n_obs );
-          p_out_pg->nodes[ n_backchained ].instantiated_by.axiom  = -1 != i_name ? (-1 != i_name ? sr.stack.children[i_name]->children[1]->getString() : "?") : "";
-          p_out_pg->nodes[ n_backchained ].instantiated_by.where  = j;
-          p_out_pg->nodes[ n_backchained ].axiom_used.insert( p_out_pg->nodes[ n_obs ].axiom_used.begin(), p_out_pg->nodes[ n_obs ].axiom_used.end() );
-          p_out_pg->nodes[ n_backchained ].axiom_used.insert( axiom_str );
-          p_out_pg->nodes[ n_backchained ].nodes_appeared         = p_out_pg->nodes[ n_obs ].nodes_appeared;
-          p_out_pg->nodes[ n_backchained ].nodes_appeared.insert( n_obs ); repeat(i, additional_obs.size()) p_out_pg->nodes[ n_backchained ].nodes_appeared.insert(additional_obs[i]);
-          p_out_pg->nodes[ n_backchained ].lit.wa_number         *= p_out_pg->nodes[ n_obs ].lit.wa_number;
-          p_out_pg->nodes[ n_backchained ].lit.instantiated_by    = p_out_pg->nodes[ n_backchained ].instantiated_by.axiom;
-
-          V(5) cerr << TS() << log_head << "new Literal: " << p_out_pg->nodes[ n_backchained ].lit.toString() << endl;
+            /* Set the node parameters. */
+            double rhs_cost = p_out_pg->nodes[n_obs].lit.wa_number;
           
-          /* Perform further backward-inference on the back-chained literal. */
-          if( WeightedAbduction != c.p_sfunc->tp || (WeightedAbduction == c.p_sfunc->tp && 0.0 < p_out_pg->nodes[ n_backchained ].lit.wa_number) )
-            if( !instantiateBackwardChainings( p_out_pg, p_out_evc, n_backchained, kb, c ) ) return false;
+            repeat(k, rhs_collections[i].second.size())
+              rhs_cost += p_out_pg->nodes[rhs_collections[i].second[k]].lit.wa_number;
+          
+            p_out_pg->nodes[n_backchained].depth                  = p_out_pg->nodes[n_obs].depth + 1;
+            p_out_pg->nodes[n_backchained].obs_node               = p_out_pg->nodes[n_obs].obs_node;
+            p_out_pg->nodes[n_backchained].parent_node.insert( n_obs );
+            p_out_pg->nodes[n_backchained].instantiated_by.axiom  = -1 != i_name ? (-1 != i_name ? sr.stack.children[i_name]->children[1]->getString() : "?") : "";
+            p_out_pg->nodes[n_backchained].instantiated_by.where  = j;
+            p_out_pg->nodes[n_backchained].axiom_used.insert( p_out_pg->nodes[n_obs].axiom_used.begin(), p_out_pg->nodes[n_obs].axiom_used.end() );
+            p_out_pg->nodes[n_backchained].axiom_used.insert( axiom_str );
+            p_out_pg->nodes[n_backchained].nodes_appeared         = p_out_pg->nodes[n_obs].nodes_appeared;
+            p_out_pg->nodes[n_backchained].nodes_appeared.insert(rhs_collections[i].second.begin(), rhs_collections[i].second.end());
+            p_out_pg->nodes[n_backchained].lit.wa_number         *= rhs_cost;
+            p_out_pg->nodes[n_backchained].lit.instantiated_by    = p_out_pg->nodes[n_backchained].instantiated_by.axiom;
+            p_out_pg->nodes[n_backchained].rhs.insert(n_obs);
+            p_out_pg->nodes[n_backchained].rhs.insert(rhs_collections[i].second.begin(), rhs_collections[i].second.end());          
             
-        }
+            V(5) cerr << TS() << log_head << "new Literal: " << p_out_pg->nodes[n_backchained].lit.toString() << endl;
           
-        backchained_literals.push_back( n_backchained );
+            /* Perform further backward-inference on the back-chained literal. */
+            if( WeightedAbduction != c.p_sfunc->tp || (WeightedAbduction == c.p_sfunc->tp && 0.0 < p_out_pg->nodes[n_backchained].lit.wa_number) )
+              if( !instantiateBackwardChainings( p_out_pg, p_out_evc, n_backchained, kb, c ) ) return false;
+            
+          }
+          
+          backchained_literals.push_back( n_backchained );
         
-      }
+        }
 
-      if( backchained_literals.size() > 0 ) {
-        pg_hypernode_t hn = p_out_pg->addHyperNode( backchained_literals );
-        p_out_pg->addEdge( n_obs, hn, -1 != i_name ? (-1 != i_name ? sr.stack.children[i_name]->children[1]->getString() : "?") : "" );
-        repeat( i, additional_obs.size() ) p_out_pg->addEdge( additional_obs[i], hn, -1 != i_name ? (-1 != i_name ? sr.stack.children[i_name]->children[1]->getString() : "?") : "" );
+        if( backchained_literals.size() > 0 ) {
+          pg_hypernode_t hn = p_out_pg->addHyperNode( backchained_literals );
+          repeat( j, rhs_collections[i].second.size() )
+            p_out_pg->addEdge( rhs_collections[i].second[j], hn, -1 != i_name ? (-1 != i_name ? sr.stack.children[i_name]->children[1]->getString() : "?") : "" );
+        }
+
       }
-        
     }
     
   }
@@ -432,7 +468,18 @@ inline int _createNodeVar( linear_programming_problem_t *p_out_lp, lp_problem_ma
   v_h = p_out_lp->addVariable( lp_variable_t( "h_" + pg.nodes[n].lit.toString() ) );
   
   if( ObservableNode == pg.nodes[n].type || LabelNode == pg.nodes[n].type ) p_out_lp->variables[ v_h ].fixValue( 1.0 );
+  else if(2 <= pg.nodes[n].rhs.size()) {
+    /* Multiple RHS? */
+    lp_constraint_t con_mrhs("mrhs", GreaterEqual, 0);
+      
+    foreachc(unordered_set<int>, r, pg.nodes[n].rhs)
+      con_mrhs.push_back(_createNodeVar(p_out_lp, p_out_lprel, pg, *r), 1.0);
 
+    con_mrhs.push_back(v_h, -1.0 * con_mrhs.vars.size());
+
+    p_out_lp->addConstraint(con_mrhs);
+  }
+  
   return v_h;
 }
 
@@ -544,13 +591,14 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
       repeat( i, PyList_Size(pyret.p_pyobj) ) {
 
         PyObject        *p_pyfactors     = PyTuple_GetItem(PyList_GetItem(pyret.p_pyobj, i), 0), *p_pyfen = PyTuple_GetItem(PyList_GetItem(pyret.p_pyobj, i), 1), *p_pyfev = PyTuple_GetItem(PyList_GetItem(pyret.p_pyobj, i), 2);
+        string           feature_element_name(PyString_AsString(p_pyfen));
         sparse_vector_t  ve;
         vector<string>   signature;
-        factor_t         fc( OrFactorTrigger );
+        factor_t         fc(0 == feature_element_name.find("^") ? AndFactorTrigger : OrFactorTrigger);
         bool             is_vua_included = false;
 
         repeat( j, PyList_Size(p_pyfactors) ) {
-          factor_t       fc_cnf(AndFactorTrigger);
+          factor_t       fc_cnf(0 == feature_element_name.find("^") ? OrFactorTrigger : AndFactorTrigger);
           vector<string> local_signature;
           
           repeat(k, PyList_Size(PyList_GetItem(p_pyfactors, j))) {
@@ -566,7 +614,7 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
             switch( fc_name[0] ) {
             case 'p': {
               int  p_id; sscanf( fc_name.substr(1).c_str(), "%d", &p_id );
-              local_signature.push_back(pg.nodes[p_id].toString());
+              local_signature.push_back((f_negation?"!":"") + pg.nodes[p_id].toString());
               fc_cnf.push_back( _createNodeVar(p_out_lp, p_out_lprel, pg, p_id), !f_negation );
               break; }
             case 'c': {
@@ -592,9 +640,10 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
           fc.push_back(v_fc);
         }
 
+        if(0 == feature_element_name.find("^")) feature_element_name = feature_element_name.substr(1);
+        
         /* MAKE SURE THAT WE DON'T HAVE OVERLAP. */
         vector<int>                          sorted_triggers = fc.triggers; sort(sorted_triggers.begin(), sorted_triggers.end());
-        string                               feature_element_name(PyString_AsString(p_pyfen));
         string                               signature_fc    = "ufc_"+::join(signature.begin(), signature.end(), "/");
         unordered_map<string, int>::iterator iter_fcm        = fc_map.find(signature_fc);
         int                                  v_fc            = -1;
@@ -607,7 +656,7 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
         
         if( f_prohibiting || -1 != v_fc ) {
           V(5) cerr << TS() << "New factor: " << ::join(signature.begin(), signature.end(), "/") << ":" << PyString_AsString(p_pyfen) << ":" << PyFloat_AsDouble(p_pyfev) << ":" << is_vua_included << endl;
-          p_out_lp->variables[ v_fc ].name += "/" + string(PyString_AsString(p_pyfen));
+          if(-1 != v_fc) p_out_lp->variables[ v_fc ].name += "/" + string(PyString_AsString(p_pyfen));
         }
         if( !f_prohibiting && -1 != v_fc ) { p_out_lprel->feature_vector[ v_fc ][ PyString_AsString(p_pyfen) ] += PyFloat_AsDouble(p_pyfev); }
 
@@ -621,9 +670,11 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
 
   /* Basic component. */
   repeat( i, pg.nodes.size() ) {
+
+    if(LabelNode == pg.nodes[i].type) _createNodeVar(p_out_lp, p_out_lprel, pg, i);
     
     /* Specal treatment for (in)equality. */
-    if( g_store.isEqual( pg.nodes[i].lit.predicate, PredicateSubstitution ) && (ObservableNode == pg.nodes[i].type || LabelNode == pg.nodes[i].type) ) {
+    if( g_store.isEqual( pg.nodes[i].lit.predicate, PredicateSubstitution ) && ObservableNode == pg.nodes[i].type ) {
       repeat( j, pg.nodes[i].lit.terms.size() ) {
         repeatf( k, j+1, pg.nodes[i].lit.terms.size() ) {
           p_out_lp->variables[ _createCorefVar( p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg.nodes[i].lit.terms[j], pg.nodes[i].lit.terms[k] ) ].fixValue( 1.0 );
@@ -765,44 +816,27 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
         
   
   if( LabelGiven == c.objfunc ) {
-
-    /* Set gold state for unification. */
     repeat( i, pg.labelnodes.size() ) {
       int n = pg.labelnodes[i];
 
-      if( g_store.isEqual( pg.nodes[n].lit.predicate, "=" ) ) {
-
+      if(g_store.isEqual( pg.nodes[n].lit.predicate, "=" )) {
         repeat( j, pg.nodes[n].lit.terms.size() ) {
           repeatf( k, j+1, pg.nodes[n].lit.terms.size() ) {
             int v_coref = _createCorefVar( p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg.nodes[n].lit.terms[j], pg.nodes[n].lit.terms[k], false );
 
             /* Shouldn't make the variable, because it means that the
                solution is not in the search space.  */
-            if( -1 == v_coref ) continue;
+            if( -1 == v_coref ) {
+              cerr << TS() << "Not in the candidate hypothesis space: " << _SC(pg.nodes[n].lit.terms[j]) << "=" << _SC(pg.nodes[n].lit.terms[k]) << endl;
+              continue;
+            }
             
-            //p_out_lp->variables[ v_coref ].fixValue(1.0);
             vc_gold.add( pg.nodes[n].lit.terms[j], pg.nodes[n].lit.terms[k] );
-          }
-        }
-        
+          } }
       }
-      
     }
-    
   }
 
-  /* Preparing for augmenting the loss. */
-  if( LossAugmented == c.objfunc ) {
-    vector<const literal_t*>  y_literals;
-    c.training_instance.y_lf.getAllLiterals( &y_literals );
-    repeat( i, y_literals.size() )
-      if( g_store.isEqual( y_literals[i]->predicate, "=" ) )
-        repeat( j, y_literals[i]->terms.size() ) {
-          repeatf( k, j+1, y_literals[i]->terms.size() ) {
-            vc_gold.add( y_literals[i]->terms[j], y_literals[i]->terms[k] );
-          } }
-  }
-  
   /* Impose transitivity constraints on variable equality relation. */
   int num_pair = 0;
   
@@ -820,17 +854,16 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
         store_item_t t1 = variables[i], t2 = variables[j]; if( t1 > t2 ) swap(t1, t2);
         int v_coref = _createCorefVar( p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, t1, t2, false );
 
+        if(-1 == v_coref) continue;
+        
         con_bestlink.push_back( v_coref, 1.0 );
         
-        if( LabelGiven == c.objfunc && 0 < vc_gold.variables.count(t1) && 0 < vc_gold.variables.count(t2)) {
-          if( !vc_gold.isInSameCluster(t1,t2) && !p_out_lp->variables[ v_coref ].isFixed() ) { 
-p_out_lp->variables[ v_coref ].fixValue(0.0); 
-//p_out_lp->variables[ v_coref ].obj_val = -9999;
- }
-          if( vc_gold.isInSameCluster(t1,t2) )                                               { 
-p_out_lp->variables[ v_coref ].fixValue(1.0); 
-//p_out_lp->variables[ v_coref ].obj_val = 9999; 
-}
+        if(LabelGiven == c.objfunc && 0 < vc_gold.variables.count(t1) && 0 < vc_gold.variables.count(t2)) {
+          if( !vc_gold.isInSameCluster(t1,t2) ) { 
+            p_out_lp->variables[ v_coref ].fixValue(0.0); 
+          } else if( vc_gold.isInSameCluster(t1,t2) ) {
+            p_out_lp->variables[ v_coref ].fixValue(1.0); 
+          }
         }
 
         // if( LossAugmented == c.objfunc && vc_gold.map_v2c.count(t1) > 0 && vc_gold.map_v2c.count(t2) > 0 ) {
@@ -868,9 +901,6 @@ p_out_lp->variables[ v_coref ].fixValue(1.0);
   /* Set the feature vector. */
   for( unordered_map<int, sparse_vector_t>::iterator iter_o2v=p_out_lprel->feature_vector.begin(); p_out_lprel->feature_vector.end() != iter_o2v; ++iter_o2v ) {
     for( sparse_vector_t::iterator iter_v=iter_o2v->second.begin(); iter_o2v->second.end()   != iter_v; ++iter_v ) {
-      
-      cerr << "WAO:" << iter_v->first << ":" << iter_v->second << endl;
-      
       if(0 == iter_v->first.find(PrefixFixedWeight)) {
         p_out_lp->variables[ iter_o2v->first ].obj_val += iter_v->second;
         
@@ -1409,11 +1439,13 @@ void function::convertLPToHypothesis( logical_function_t *p_out_h, sparse_vector
             double f_coefficient = 1.0;
             if(f_vector_weighting && cache.loss.weighting.find(i) != cache.loss.weighting.end())
               f_coefficient = cache.loss.weighting.find(i)->second;
+
+            size_t ps = iter_fv->first.find(PrefixInvisibleElement);
+            if(0 == ps || 1 == ps) continue;
             
             (*p_out_fv)[ iter_fv->first ] += f_coefficient * iter_fv->second;
           }
         }
-
       }
       // if( cache.lprel.feature_vector.end() != cache.lprel.feature_vector.find(i) ) {
       //   foreachc( sparse_vector_t, iter_fv, cache.lprel.feature_vector.find(i)->second )

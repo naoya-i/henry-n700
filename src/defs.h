@@ -37,6 +37,7 @@
 
 #define FnTrainingLabel "label"
 #define PrefixFixedWeight "!"
+#define PrefixInvisibleElement "$"
 
 #define InvalidCutoff     -9999.0
 #define InvalidFixedValue -9999.0
@@ -562,7 +563,7 @@ struct pg_node_t {
   int                   n, depth, obs_node;
   instantiated_by_t     instantiated_by;
   unordered_set<string> axiom_used;
-  unordered_set<int>    nodes_appeared, parent_node;
+  unordered_set<int>    nodes_appeared, parent_node, rhs;
   
   inline pg_node_t( const literal_t &_lit, pg_node_type_t _type, int _n ) : n(_n), depth(0), obs_node(-1), lit( _lit ), type( _type ) {};
 
@@ -621,7 +622,7 @@ struct lp_constraint_t {
   inline void _print( string *p_out, const vector<lp_variable_t> &var_instances ) const {
 
     for( int i=0; i<vars.size(); i++ ) {
-      char buffer[1024]; sprintf( buffer, "%.2f * %s", coes[i], var_instances[ vars[i] ].name.c_str() );
+      char buffer[10240]; sprintf( buffer, "%.2f * %s", coes[i], var_instances[ vars[i] ].name.c_str() );
       (*p_out) += buffer;
       if( i < vars.size()-1 ) (*p_out) += " + ";
     }
@@ -788,10 +789,11 @@ struct factor_t {
       con.is_lazy = f_lazy;
 
       repeat( i, triggers.size() )
-        con.push_back( triggers[i], 1.0 );
+        con.push_back( triggers[i], triggers_pol[i] ? 1.0 : -1.0 );
       
-      con.lhs = -1.0 * con.vars.size() + 1;
-      con.push_back( v_factor, -1.0 * con.vars.size() );
+      con.lhs = -1.0 * con.vars.size() + 1 - num_neg;
+      con.rhs = -num_neg;
+      if( !f_prohibit ) con.push_back(v_factor, -1.0 * con.vars.size());
       
       p_out_lp->addConstraint( con );
       break; }
@@ -1088,7 +1090,7 @@ struct variable_cluster_t {
 struct inference_configuration_t {
   uint_t                         initial_label_index;
   double                         loss;
-  string                         extension_module;
+  string                         extension_module, target_name;
   weight_vector_t                weights;
   bool                           f_use_temporal_weights, f_default_weight1;
   score_function_t              *p_sfunc;
@@ -1116,6 +1118,7 @@ struct inference_configuration_t {
 
   inline bool isTimeout() const { return getTimeofDaySec() - timestart > timelimit; }
   inline bool isColoring() const { return string::npos != output_info.find("colored"); }
+  inline bool isAxiomOutput() const { return string::npos != output_info.find("axioms"); }
 };
 
 
@@ -1191,13 +1194,14 @@ struct external_module_t {
   }
 
   static inline PyObject *asTuple( const pg_node_t &n ) {
-    PyObject *p_pytuple = PyTuple_New(6), *p_pylist = PyList_New(0);
+    PyObject *p_pytuple = PyTuple_New(7), *p_pylist = PyList_New(0);
     PyTuple_SetItem(p_pytuple, 0, PyString_FromString(g_store.claim(n.lit.predicate).c_str()));
     PyTuple_SetItem(p_pytuple, 1, p_pylist);
     PyTuple_SetItem(p_pytuple, 2, PyInt_FromLong(n.n));
     PyTuple_SetItem(p_pytuple, 3, PyString_FromString(n.instantiated_by.axiom.c_str()));
     PyTuple_SetItem(p_pytuple, 4, PyString_FromString(join(n.nodes_appeared.begin(), n.nodes_appeared.end(), "%d", ",").c_str()));
     PyTuple_SetItem(p_pytuple, 5, PyFloat_FromDouble(n.lit.wa_number));
+    PyTuple_SetItem(p_pytuple, 6, PyInt_FromLong(n.type));
     repeat(i, n.lit.terms.size()) PyList_Append(p_pylist, PyString_FromString(g_store.claim(n.lit.terms[i]).c_str()));
     return p_pytuple;
   }
@@ -1205,10 +1209,12 @@ struct external_module_t {
   static inline PyObject *asListOfTuples(const proof_graph_t &pg) {
     PyObject *p_pyenum = PyList_New(0);
     repeat( i, pg.nodes.size() ) {
-      PyObject *p_pytuple = PyTuple_New(3), *p_pylist = PyList_New(0);
+      PyObject *p_pytuple = PyTuple_New(5), *p_pylist = PyList_New(0);
       PyTuple_SetItem( p_pytuple, 0, PyString_FromString(g_store.claim(pg.nodes[i].lit.predicate).c_str()) );
       PyTuple_SetItem( p_pytuple, 1, p_pylist );
       PyTuple_SetItem( p_pytuple, 2, PyInt_FromLong(pg.nodes[i].n));
+      PyTuple_SetItem( p_pytuple, 3, PyString_FromString(pg.nodes[i].lit.extra.c_str()) );
+      PyTuple_SetItem( p_pytuple, 4, PyFloat_FromDouble(pg.nodes[i].lit.wa_number));
       repeat( j, pg.nodes[i].lit.terms.size() ) PyList_Append( p_pylist, PyString_FromString(g_store.claim(pg.nodes[i].lit.terms[j]).c_str()) );
       PyList_Append( p_pyenum, p_pytuple );
     }
@@ -1264,6 +1270,14 @@ struct external_module_t {
     external_module_context_t &context = *(external_module_context_t*)PyCapsule_GetPointer(p_pycon, NULL);
     return PyBool_FromLong(context.p_c->isTimeout() ? 1 : 0);
   }
+
+  static inline PyObject *getTargetName( PyObject *self, PyObject *args ) {
+    char *p_v1, *p_v2;
+    PyObject *p_pycon;
+    PyArg_ParseTuple(args, "O", &p_pycon);
+    external_module_context_t &context = *(external_module_context_t*)PyCapsule_GetPointer(p_pycon, NULL);
+    return PyString_FromString(context.p_c->target_name.c_str());
+  }
   
   inline bool initialize() {
     static PyMethodDef p_pyhenryext[] = {
@@ -1272,6 +1286,7 @@ struct external_module_t {
       {"getLiterals", getLiterals, METH_VARARGS, "Really?\n"},
       {"getFactorOfUnification", getFactorOfUnification, METH_VARARGS, "But, ... I'm working in the weekend.\n"},
       {"isTimeout", isTimeout, METH_VARARGS, "Woops."},
+      {"getTargetName", getTargetName, METH_VARARGS, "Wao!"},
       {NULL, NULL, 0, NULL}
     };
   
@@ -1375,7 +1390,7 @@ struct loss_t {
       PyObject *p_pyret = NULL;
       mypyobject_t::buyTrashCan();
       
-      external_module_context_t emc = {NULL, &lprel, NULL};
+      external_module_context_t emc = {NULL, &lprel, &ci};
       mypyobject_t pycon( PyCapsule_New( (void*)&emc, NULL, NULL) );
       p_pyret = g_ext.call( "cbGetLoss", Py_BuildValue( "Oss", pycon.p_pyobj, current_y.toString().c_str(), td.y_lf.toString().c_str() ) );
       

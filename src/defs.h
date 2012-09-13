@@ -24,7 +24,7 @@
 
 #include "darts.h"
 
-#include <python2.7/Python.h>
+#include <Python.h>
 
 #define has_key( dict, key ) (dict.end() != dict.find( key ))
 

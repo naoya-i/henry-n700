@@ -94,9 +94,10 @@ g_fm = [(re.compile(x.strip().split()[0][1:-1]) if x.startswith("/") else re.com
 #
 print >>sys.stderr, "Loading senses..."
 
-g_sen    = dict([("%s-%s-%s" % (ln.split()[0], ln.split()[1], 1000*int(ln.split()[2])+int(ln.split()[3])), ln.split()[4]) for ln in open(_myfile("conll-sense.tsv")) ])
-
-
+if os.path.exists(_myfile("conll-sense.tsv")):
+	g_sen = dict([("%s-%s-%s" % (ln.split()[0], ln.split()[1], 1000*int(ln.split()[2])+int(ln.split()[3])), ln.split()[4]) for ln in open(_myfile("conll-sense.tsv")) ])
+else:
+	print >>sys.stderr, "No senses are loaded."
 
 #
 print >>sys.stderr, "Loading special predicates..."

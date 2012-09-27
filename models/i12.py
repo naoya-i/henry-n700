@@ -17,7 +17,7 @@ def _break(lf):	lf = re.match( "(.*?)\((.*?)\)", lf ); return (lf.group(1), lf.g
 
 # You will find your file here.
 def _myfile( x ):
-	return os.path.join( g_mydir if None == pa.datadir else pa.datadir, x )
+	return os.path.join(g_mydir + "../data/" if None == pa.datadir else pa.datadir, x)
 
 parser = argparse.ArgumentParser( description="An external module for coreference experiments.", prog="" )
 parser.add_argument( "--loss", help="Loss function (f1/disagree).", default="disagree" )
@@ -57,7 +57,7 @@ print >>sys.stderr, "Loading WordNet antonyms..."
 
 g_wnanto = {}
 
-for ln in open(_myfile("../data/wn-anto.tsv")):
+for ln in open(_myfile("wn-anto.tsv")):
 	ln																 = ln.split()
 	g_wnanto["%s-%s" % (ln[0], ln[1])] = None
 
@@ -67,7 +67,7 @@ print >>sys.stderr, "Loading WordNet hierarchy..."
 
 g_wnhier = defaultdict(list)
 
-for ln in open(_myfile("../data/wn-hyp.lisp")):
+for ln in open(_myfile("wn-hyp.lisp")):
 	ln = re.findall( "\(synset([0-9]+) .*?\)\) \(synset([0-9]+) .*?\)\) \)", ln )
 	g_wnhier[ ln[0][1] ] += [ln[0][0]]
 
@@ -77,7 +77,7 @@ g_fnsr = {}
 
 print >>sys.stderr, "Loading FrameNet selectional restriction..."
 
-for ln in open(_myfile("../data/fn-sr.lisp")):
+for ln in open(_myfile("fn-sr.lisp")):
 	ln = re.findall( "\(=> \((.*?) s x :([0-9.]+)\) \((FN[^ ]+) (.*?)\)", ln )
 
 	if 1 == len(ln):
@@ -88,13 +88,13 @@ for ln in open(_myfile("../data/fn-sr.lisp")):
 print >>sys.stderr, "Loading feature map..."
 
 g_fm = [(re.compile(x.strip().split()[0][1:-1]) if x.startswith("/") else re.compile("^%s$" % x.strip().split()[0]),
-				 x.strip().split()[1], x.strip().split()[2]) for x in open(_myfile("../data/feature-map.tsv"))]
+				 x.strip().split()[1], x.strip().split()[2]) for x in open(_myfile("feature-map.tsv"))]
 
 
 #
 print >>sys.stderr, "Loading senses..."
 
-g_sen    = dict([("%s-%s-%s" % (ln.split()[0], ln.split()[1], 1000*int(ln.split()[2])+int(ln.split()[3])), ln.split()[4]) for ln in open(_myfile("../data/conll-sense.tsv")) ])
+g_sen    = dict([("%s-%s-%s" % (ln.split()[0], ln.split()[1], 1000*int(ln.split()[2])+int(ln.split()[3])), ln.split()[4]) for ln in open(_myfile("conll-sense.tsv")) ])
 
 
 
@@ -102,11 +102,11 @@ g_sen    = dict([("%s-%s-%s" % (ln.split()[0], ln.split()[1], 1000*int(ln.split(
 print >>sys.stderr, "Loading special predicates..."
 
 g_wep			= [re.compile(x.strip()[1:-1]) if x.startswith("/") else re.compile("^%s$" % x.strip())
-				for x in open(_myfile("../data/weak-evident-preds.txt")) if not x.startswith("#")]
-g_pnp			= [x.strip() for x in open(_myfile("../data/proper-name-preds.txt"))]
-g_prnp		= [x.strip() for x in open(_myfile("../data/pronoun-preds.txt"))]
-g_mp			= [x.strip() for x in open(_myfile("../data/modality-preds.txt"))]
-g_handinc = dict([(x.strip(), 1) for x in open(_myfile("../data/incompatible.txt"))])
+				for x in open(_myfile("weak-evident-preds.txt")) if not x.startswith("#")]
+g_pnp			= [x.strip() for x in open(_myfile("proper-name-preds.txt"))]
+g_prnp		= [x.strip() for x in open(_myfile("pronoun-preds.txt"))]
+g_mp			= [x.strip() for x in open(_myfile("modality-preds.txt"))]
+g_handinc = dict([(x.strip(), 1) for x in open(_myfile("incompatible.txt"))])
 
 
 #
@@ -114,16 +114,16 @@ print >>sys.stderr, "Loading schema..."
 
 g_schema = {}
 
-if os.path.exists(_myfile("../data/schemas-size12.cdb")):
+if os.path.exists(_myfile("schemas-size12.cdb")):
 	print >>sys.stderr, "Using cache!"
-	g_schema = cdb.init(_myfile("../data/schemas-size12.cdb"))
+	g_schema = cdb.init(_myfile("schemas-size12.cdb"))
 	
 else:
-	if "schema" in pa.caching: maker = cdb.cdbmake( _myfile("../data/schemas-size12.cdb"), _myfile("../data/schemas-size12.cdb.tmp") )
+	if "schema" in pa.caching: maker = cdb.cdbmake( _myfile("schemas-size12.cdb"), _myfile("schemas-size12.cdb.tmp") )
 
 	schema_id = 0
 	
-	for score, events, event_scores, roles in re.findall( "\*\*\*\*\*\nscore=([-0-9.]+)\nEvents: (.*?)\nScores: (.*?)\n(.*?)\n\n", open( _myfile("../data/schemas-size12") ).read(), re.MULTILINE|re.DOTALL ):
+	for score, events, event_scores, roles in re.findall( "\*\*\*\*\*\nscore=([-0-9.]+)\nEvents: (.*?)\nScores: (.*?)\n(.*?)\n\n", open( _myfile("schemas-size12") ).read(), re.MULTILINE|re.DOTALL ):
 
 		schema_id += 1
 		scores_dict = {}
@@ -150,8 +150,8 @@ else:
 		
 
 print >>sys.stderr, "Loading word frequency and abstraction levels..."
-g_word_freq	= dict( [(x.split()[1], -math.log( int(x.split()[3]) )) for x in open(_myfile("../data/entriesWithoutCollocates.txt")) if 5 == len(x.split())] )
-g_word_abst = dict( [(x.split()[0][:-1], -int(x.split()[1])/18.0) for x in open(_myfile("../data/WN_abstraction_level.txt")) if 2 == len(x.split())] )
+g_word_freq	= dict( [(x.split()[1], -math.log( int(x.split()[3]) )) for x in open(_myfile("entriesWithoutCollocates.txt")) if 5 == len(x.split())] )
+g_word_abst = dict( [(x.split()[0][:-1], -int(x.split()[1])/18.0) for x in open(_myfile("WN_abstraction_level.txt")) if 2 == len(x.split())] )
 
 #
 # RESOURCE: FUNCTIONAL RELATIONS
@@ -160,7 +160,7 @@ g_funcrel			 = defaultdict( list )
 if not pa.nofuncrel:
 	print >>sys.stderr, "Loading functional relations..."
 
-	for ln in open(_myfile("../data/func_relations-patterns-uniq.txt")):
+	for ln in open(_myfile("func_relations-patterns-uniq.txt")):
 		if 2 != len(ln.split("\t")): continue
 		
 		ln = ln.strip().replace( "'", "" )
@@ -175,7 +175,7 @@ g_wnder = {}
 if not pa.noder:
 	print >>sys.stderr, "Loading WordNet derivational relations..."
 
-	for ln in open(_myfile("../data/WNderiv_list.txt")):
+	for ln in open(_myfile("WNderiv_list.txt")):
 		ln = ln.strip().replace("'", "").split()
 		g_wnder["%s-%s" % (ln[0], ln[1])] = None
 		
@@ -188,9 +188,9 @@ g_explicit_non_ids = []
 if not pa.noexplident:
 	print >>sys.stderr, "Loading explicit-nonidentity predicates..."
 
-	g_explnids_list = [ln.split( "x!=y => " )[1] for ln in open(_myfile("../data/inequality.kb")) if 2 == len( ln.split( "x!=y => " ) )]
+	g_explnids_list = [ln.split( "x!=y => " )[1] for ln in open(_myfile("inequality.kb")) if 2 == len( ln.split( "x!=y => " ) )]
 
-	for ln in open(_myfile("../data/inequality.kb")):
+	for ln in open(_myfile("inequality.kb")):
 		ret = re.findall( " ([^ ]+)'\((.*?)\)", ln.strip() )
 		if 0 == len(ret): continue
 
@@ -212,7 +212,7 @@ print >>sys.stderr, "Loading frame disjointness axioms..."
 
 g_fndisj = {}
 
-for ln in open(_myfile("../data/fn-disj.tsv")):
+for ln in open(_myfile("fn-disj.tsv")):
 	ln = ln.strip().split()
 	
 	for i, p1 in enumerate(ln):

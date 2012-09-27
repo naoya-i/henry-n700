@@ -17,10 +17,11 @@ def _break(lf):	lf = re.match( "(.*?)\((.*?)\)", lf ); return (lf.group(1), lf.g
 
 # You will find your file here.
 def _myfile( x ):
-	return os.path.join( g_mydir, x )
+	return os.path.join( g_mydir if None == pa.datadir else pa.datadir, x )
 
 parser = argparse.ArgumentParser( description="An external module for coreference experiments.", prog="" )
 parser.add_argument( "--loss", help="Loss function (f1/disagree).", default="disagree" )
+parser.add_argument( "--datadir", help="Directory of data." )
 parser.add_argument( "--argcons", help="Activate argument constraints.", action="store_true" )
 parser.add_argument( "--condunif", help="Activate conditional unification constraints.", type=file, nargs="+" )
 parser.add_argument( "--funcrel", help="Activate functional relations constraints.", type=file, nargs=1 )

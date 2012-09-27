@@ -336,7 +336,7 @@ def cbScoreFunction( ctx ):
 			psuf, qsuf		 = (psuf[0] if 0 < len(psuf) else ""), (qsuf[0] if 0 < len(qsuf) else "")
 			fc_cooc				 = ["p%d" % p[2], "p%d" % q[2]]
 			fc_cooc_vu0		 = fc_cooc + ["c%s %s" % (p[1][0], q[1][0])]
-			fc_cooc_vu1		 = fc_cooc + ["c%s %s" % (p[1][1], q[1][1])]
+			fc_cooc_vu1		 = fc_cooc + ["c%s %s" % (p[1][min(1, len(p[1]))], q[1][min(1, len(q[1]))])]
 			fc_cooc_vuall1 = fc_cooc + (["c%s %s" % (p[1][i], q[1][i]) for i in xrange(1,len(p[1]))] if 1 < len(p[1]) and len(p[1]) == len(q[1]) else [])
 			fc_cooc_vuall  = fc_cooc + (["c%s %s" % (p[1][i], q[1][i]) for i in xrange(len(p[1]))] if len(p[1]) == len(q[1]) else [])
 

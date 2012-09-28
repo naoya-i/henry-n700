@@ -371,11 +371,13 @@ bool function::instantiateBackwardChainings( proof_graph_t *p_out_pg, variable_c
             n_backchained = p_out_pg->addNode( lit, HypothesisNode, n_obs );
         
             /* Set the node parameters. */
-            double rhs_cost = p_out_pg->nodes[n_obs].lit.wa_number;
+            double rhs_cost = 0.0; 
           
             repeat(k, rhs_collections[i].second.size())
               rhs_cost += p_out_pg->nodes[rhs_collections[i].second[k]].lit.wa_number;
-          
+
+            V(5) cerr << TS() << log_head << p_out_pg->nodes[n_backchained].lit.wa_number << "*" << rhs_cost << endl;
+            
             p_out_pg->nodes[n_backchained].depth                  = p_out_pg->nodes[n_obs].depth + 1;
             p_out_pg->nodes[n_backchained].obs_node               = p_out_pg->nodes[n_obs].obs_node;
             p_out_pg->nodes[n_backchained].parent_node.insert( n_obs );
@@ -389,7 +391,7 @@ bool function::instantiateBackwardChainings( proof_graph_t *p_out_pg, variable_c
             p_out_pg->nodes[n_backchained].lit.instantiated_by    = p_out_pg->nodes[n_backchained].instantiated_by.axiom;
             p_out_pg->nodes[n_backchained].rhs.insert(n_obs);
             p_out_pg->nodes[n_backchained].rhs.insert(rhs_collections[i].second.begin(), rhs_collections[i].second.end());          
-            
+
             V(5) cerr << TS() << log_head << "new Literal: " << p_out_pg->nodes[n_backchained].lit.toString() << endl;
           
             /* Perform further backward-inference on the back-chained literal. */

@@ -93,6 +93,7 @@ g_fm = [(re.compile(x.strip().split()[0][1:-1]) if x.startswith("/") else re.com
 
 #
 print >>sys.stderr, "Loading senses..."
+g_sen = {}
 
 if os.path.exists(_myfile("conll-sense.tsv")):
 	g_sen = dict([("%s-%s-%s" % (ln.split()[0], ln.split()[1], 1000*int(ln.split()[2])+int(ln.split()[3])), ln.split()[4]) for ln in open(_myfile("conll-sense.tsv")) ])
@@ -336,7 +337,8 @@ def cbScoreFunction( ctx ):
 			psuf, qsuf		 = (psuf[0] if 0 < len(psuf) else ""), (qsuf[0] if 0 < len(qsuf) else "")
 			fc_cooc				 = ["p%d" % p[2], "p%d" % q[2]]
 			fc_cooc_vu0		 = fc_cooc + ["c%s %s" % (p[1][0], q[1][0])]
-			fc_cooc_vu1		 = fc_cooc + ["c%s %s" % (p[1][min(1, len(p[1]))], q[1][min(1, len(q[1]))])]
+			if len(q[1]) > 1 and len(p[1]) > 1:
+				fc_cooc_vu1		 = fc_cooc + ["c%s %s" % (p[1][min(1, len(p[1]))], q[1][min(1, len(q[1]))])]
 			fc_cooc_vuall1 = fc_cooc + (["c%s %s" % (p[1][i], q[1][i]) for i in xrange(1,len(p[1]))] if 1 < len(p[1]) and len(p[1]) == len(q[1]) else [])
 			fc_cooc_vuall  = fc_cooc + (["c%s %s" % (p[1][i], q[1][i]) for i in xrange(len(p[1]))] if len(p[1]) == len(q[1]) else [])
 
@@ -426,7 +428,7 @@ def cbScoreFunction( ctx ):
 						if None != prnt1 and prnt1 == prnt2 and p[1][1] != q[1][1]:
 							if not pa.noinc: ret += [([fc_cooc_vu1], "WN_SIBLING_SYNSET_Y", -1)]
 
-				if not pa.noder and p[1][1] != q[1][1] and (g_wnder.has_key("%s-%s" % (p[0], q[0])) or g_wnder.has_key("%s-%s" % (q[0], p[0]))):
+				if not pa.noder and len(p[1]) > 1 and len(q[1]) > 1 and p[1][1] != q[1][1] and (g_wnder.has_key("%s-%s" % (p[0], q[0])) or g_wnder.has_key("%s-%s" % (q[0], p[0]))):
 					ret += [([fc_cooc_vu1], "WN_DERIVATIONAL_Y", 1)]
 					
 				# HAND-CRAFTED INCOMPATIBILITY.
@@ -439,6 +441,8 @@ def cbScoreFunction( ctx ):
 				# PROPER NAMES THAT DON'T BELONG TO THE SAME SYNSET
 				if "nn" == psuf == qsuf and p[0] != q[0]:
 					def _isPn(x):
+						if len(x[1])<2: return False, []
+
 						f_p_pn, synsets = False, []
 
 						for pp in henryext.getLiteralsFromTerm(ctx, x[1][1]):
@@ -534,6 +538,7 @@ def cbPreprocess( ctx, obs ):
 			m = re.search( "-(nn|adj|vb)$", obp )
 			if None != m:
 				try:
+					if len(obp.split("-")) < 3: continue
 					s = corpus.wordnet.synset("%s.%s.%s" % (obp.split("-")[-2], {"nn": "n", "adj": "a", "vb": "v"}.get(obp.split("-")[-1]), g_sen.get("%s-%s" % (bsn, obx.split(":")[2][1:-1]), "01")))
 
 					for h in [s] + (s.hypernyms() if pa.wnhypannotate else []):

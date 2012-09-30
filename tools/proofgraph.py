@@ -25,10 +25,10 @@ def main():
 		query = "%shenry-output/result-inference/proofgraph" % pa.path
 
 		if None != pa.graph:
-			query = "%shenry-output/learn-process/training/*/proofgraph[@id=\"%s\"]" % "|".join( pa.path, pa.graph )
+			query = "%shenry-output/learn-process/training/*/proofgraph[@id=\"%s\"]" % (pa.path, "|".join( pa.graph ))
 
 			if 0 == len( t.xpath( query ) ):
-				query = "%shenry-output/result-inference[@target=\"%s\"]/proofgraph" % "|".join( pa.path, pa.graph )
+				query = "%shenry-output/result-inference[@target=\"%s\"]/proofgraph" % (pa.path, "|".join( pa.graph ))
 
 		for pg in t.xpath(query):
 			if "dot" == pa.format:    _outputDot(t, pg, pa)
@@ -237,16 +237,16 @@ def _outputDot(t, pg, pa):
 
 	print "subgraph cluster_o {"
 	print "subgraph cluster_o1 {"
-	print "\n".join( coloringExpl( obs_nodes, False ) )
+	print "\n".join( coloringExpl( obs_nodes, False ) ).encode('utf-8')
 	print "}"
 
 	print "subgraph cluster_o2 {"
-	print "\n".join( coloringExpl( obs_nodes, True ) )
+	print "\n".join( coloringExpl( obs_nodes, True ) ).encode('utf-8')
 	print "}"
 	print "}"
 
-	print "\n".join( coloringExpl( other_nodes, True ) )
-	print "\n".join( coloringExpl( other_nodes, False ) )
+	print "\n".join( coloringExpl( other_nodes, True ) ).encode('utf-8')
+	print "\n".join( coloringExpl( other_nodes, False ) ).encode('utf-8')
 
 	print "}"
 	

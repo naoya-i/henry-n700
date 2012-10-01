@@ -394,10 +394,6 @@ bool function::instantiateBackwardChainings( proof_graph_t *p_out_pg, variable_c
 
             V(5) cerr << TS() << log_head << "new Literal: " << p_out_pg->nodes[n_backchained].lit.toString() << endl;
           
-            /* Perform further backward-inference on the back-chained literal. */
-            if( WeightedAbduction != c.p_sfunc->tp || (WeightedAbduction == c.p_sfunc->tp && 0.0 < p_out_pg->nodes[n_backchained].lit.wa_number) )
-              if( !instantiateBackwardChainings( p_out_pg, p_out_evc, n_backchained, kb, c ) ) return false;
-            
           }
           
           backchained_literals.push_back( n_backchained );
@@ -408,8 +404,17 @@ bool function::instantiateBackwardChainings( proof_graph_t *p_out_pg, variable_c
           pg_hypernode_t hn = p_out_pg->addHyperNode( backchained_literals );
           repeat( j, rhs_collections[i].second.size() )
             p_out_pg->addEdge( rhs_collections[i].second[j], hn, -1 != i_name ? (-1 != i_name ? sr.stack.children[i_name]->children[1]->getString() : "?") : "" );
-        }
 
+          /* Perform further backward-inference on the back-chained literal. */
+          bool f_bc_ret = false;
+          
+          repeat( j, backchained_literals.size() ) {
+            if( WeightedAbduction != c.p_sfunc->tp || (WeightedAbduction == c.p_sfunc->tp && 0.0 < p_out_pg->nodes[backchained_literals[j]].lit.wa_number) )
+              f_bc_ret |= instantiateBackwardChainings( p_out_pg, p_out_evc, backchained_literals[j], kb, c );
+          }
+
+          if( !f_bc_ret ) return false;
+        }
       }
     }
     

@@ -812,6 +812,8 @@ struct proof_graph_t {
   unordered_set<string> instantiated_axioms;
   string                obs;
 
+  unordered_map<int, unordered_map<string, int> > p_x_axiom;
+  
   pg_node_map_t               p2n;
   pg_node_hypernode_map_t     n2hn;
   pg_edge_set_t               edges;

@@ -169,14 +169,31 @@ bool function::enumeratePotentialElementalHypotheses( proof_graph_t *p_out_pg, v
 
     mypyobject_t::cleanTrashCan();
   }
-  
-  repeat( i, nodes_obs.size() ) {
-    if( c.isTimeout() ) return false;
-    if( ObservableNode != p_out_pg->nodes[ nodes_obs[i] ].type ) continue;
-    if( "" != p_out_pg->nodes[ nodes_obs[i] ].lit.extra && 0 == p_out_pg->nodes[ nodes_obs[i] ].lit.wa_number ) continue;
-    if( !instantiateBackwardChainings( p_out_pg, p_out_evc, nodes_obs[i], kb, c ) ) return false;
-  }
 
+  /* Reasoning on observations. */
+  // repeat( i, nodes_obs.size() ) {
+  //   if( c.isTimeout() ) return false;
+  //   if( ObservableNode != p_out_pg->nodes[ nodes_obs[i] ].type ) continue;
+  //   if( "" != p_out_pg->nodes[ nodes_obs[i] ].lit.extra && 0 == p_out_pg->nodes[ nodes_obs[i] ].lit.wa_number ) continue;
+  //   if( !instantiateBackwardChainings( p_out_pg, p_out_evc, nodes_obs[i], kb, c ) ) return false;
+  // }
+
+  /* Reasoning on abduced propositions. */
+  int n_start = 0;
+  
+  repeat( d, c.depthlimit ) {    
+    repeatf( i, 0, p_out_pg->nodes.size() ) {
+      if( c.isTimeout() ) return false;
+      if( LabelNode == p_out_pg->nodes[i].type ) continue;
+      if( "" != p_out_pg->nodes[i].lit.extra && 0 == p_out_pg->nodes[i].lit.wa_number ) continue;
+      if( !instantiateBackwardChainings( p_out_pg, p_out_evc, i, kb, c ) ) return false;
+    }
+
+    if(n_start == p_out_pg->nodes.size()) { cerr << TS() << "No axioms was applied." << endl; break; }
+    
+    n_start = p_out_pg->nodes.size();
+  }
+  
   p_out_pg->addHyperNode( nodes_obs );
 
   /* Add the equality. */  
@@ -261,7 +278,7 @@ bool function::instantiateBackwardChainings( proof_graph_t *p_out_pg, variable_c
           if( SQLITE_OK != sqlite3_prepare_v2(p_out_pg->p_db, query.c_str(), -1, &p_stmt, 0) ) { E( "Invalid query: " << query.c_str() ); continue; }
           if( 0 == (num_cols = sqlite3_column_count(p_stmt)) ) sqlite3_finalize(p_stmt);
           else {
-            while( SQLITE_ROW == sqlite3_step(p_stmt) ) {
+            while( SQLITE_ROW == sqlite3_step(p_stmt) ) {              
               repeat( k, lf.branches[1].branches.size() ) {
                 if( NULL != (p_val = (char *)sqlite3_column_text(p_stmt, (MaxBasicProp+MaxArguments)*k)) ) {
                   if( !getMGU( &theta, lf.branches[1].branches[k].lit, p_out_pg->nodes[ atoi(p_val) ].lit ) ) goto BED;
@@ -269,12 +286,12 @@ bool function::instantiateBackwardChainings( proof_graph_t *p_out_pg, variable_c
                   rhs_literals.push_back(lf.branches[1].branches[k].lit);
                 }
               }
-
+              
               {
                 unordered_set<int> aobss(rhs_candidates.begin(), rhs_candidates.end());
                 if(aobss.size() != rhs_candidates.size()) goto BED;
               }
-
+              
               rhs_collections.push_back(make_pair(rhs_literals, rhs_candidates));
               
             BED:
@@ -298,6 +315,12 @@ bool function::instantiateBackwardChainings( proof_graph_t *p_out_pg, variable_c
         rhs_collections.push_back(make_pair(rhs_lf,rhs_single));
       }
 
+      /* Already applied? */
+      if( p_out_pg->p_x_axiom[n_obs][axiom_str] > 0 ) continue;
+
+      if(rhs_collections.size() > 0)
+        p_out_pg->p_x_axiom[n_obs][axiom_str] = 1;
+      
       repeat(i, rhs_collections.size()) {
         unifier_t theta;
         bool      f_inc = false;
@@ -404,16 +427,6 @@ bool function::instantiateBackwardChainings( proof_graph_t *p_out_pg, variable_c
           pg_hypernode_t hn = p_out_pg->addHyperNode( backchained_literals );
           repeat( j, rhs_collections[i].second.size() )
             p_out_pg->addEdge( rhs_collections[i].second[j], hn, -1 != i_name ? (-1 != i_name ? sr.stack.children[i_name]->children[1]->getString() : "?") : "" );
-
-          /* Perform further backward-inference on the back-chained literal. */
-          bool f_bc_ret = false;
-          
-          repeat( j, backchained_literals.size() ) {
-            if( WeightedAbduction != c.p_sfunc->tp || (WeightedAbduction == c.p_sfunc->tp && 0.0 < p_out_pg->nodes[backchained_literals[j]].lit.wa_number) )
-              f_bc_ret |= instantiateBackwardChainings( p_out_pg, p_out_evc, backchained_literals[j], kb, c );
-          }
-
-          if( !f_bc_ret ) return false;
         }
       }
     }
@@ -421,7 +434,6 @@ bool function::instantiateBackwardChainings( proof_graph_t *p_out_pg, variable_c
   }
 
   return true;
-  
 }
 
 inline int _getCorefVar( store_item_t t1, store_item_t t2, const lp_problem_mapping_t &lprel ) {

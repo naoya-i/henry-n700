@@ -1553,7 +1553,7 @@ bool function::readPrecompiledKB( knowledge_base_t *p_out_kb, const string &file
   if( !ifs_pckb.is_open() ) return false;
   
   /* Read the header. */
-  V(5) cerr << TS() << "readPrecompiledKB: Loading header..." << endl;
+  V(1) cerr << TS() << "readPrecompiledKB: Loading header..." << endl;
   
   int num_axioms, size_header = 0;
   ifs_pckb.read( (char *)&num_axioms, sizeof(int) );

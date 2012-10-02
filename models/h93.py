@@ -49,10 +49,11 @@ def cbScoreFunction( ctx ):
 				
 			#
 			# EXPLANATION BY UNIFICATION.
-			if "" != p[4] and "" != q[4]:
+			# if "" != p[4] and "" != q[4]:
 
-				# IF THEY ARE EXPLAINING THE SAME THING, JUST IGNORE THEM. (p => q, p => q)
-				if 0 < len(set(p[4].split(",")) & set(q[4].split(","))): continue
+			# 	# IF THEY ARE EXPLAINING THE SAME THING, JUST IGNORE THEM. (p => q, p => q)
+			# 	if 0 < len(set(p[4].split(",")) & set(q[4].split(","))): continue
+
 
 			#
 			# BELOW ARE EXPLANATION BY UNIFICATION; AVOID DOUBLE-COUNT.			

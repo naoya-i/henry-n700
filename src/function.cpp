@@ -1700,6 +1700,7 @@ void proof_graph_t::printGraph( const linear_programming_problem_t &lpp, const l
     repeat( j, p_unifiables->size() ) {
       uint_t nj = (*p_unifiables)[j];
 
+      if(g_store.isEqual(nodes[i].lit.predicate, "!=")) continue;
       if( i == nj ) continue;
       
       unordered_map<int, int>::const_iterator iter_vj = lprel.n2v.find(nj);

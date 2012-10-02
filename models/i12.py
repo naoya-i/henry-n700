@@ -328,10 +328,10 @@ def cbScoreFunction( ctx ):
 					ret      += [([fc_cooc + ["c%s %s" % (p[1][0], q[1][0])]], "!FN_DISJOINT_FRAMES", -1000)]
 				
 				# IF THEY ARE EXPLAINING THE SAME THING, JUST IGNORE THEM. (p => q, p => q)
-				if 0 < len(set(p[4].split(",")) & set(q[4].split(","))): continue
+				#if 0 < len(set(p[4].split(",")) & set(q[4].split(","))): continue
 				
 				# SELF-EXPLANATION IS PROHIBITED. (p => q => p)
-				if repr(q[2]) in p[4].split(","): continue
+				#if repr(q[2]) in p[4].split(","): continue
 				
 			psuf, qsuf		 = re.findall("-([^-]+)$", p[0]), re.findall("-([^-]+)$", q[0])
 			psuf, qsuf		 = (psuf[0] if 0 < len(psuf) else ""), (qsuf[0] if 0 < len(qsuf) else "")
@@ -538,7 +538,8 @@ def cbPreprocess( ctx, obs ):
 			m = re.search( "-(nn|adj|vb)$", obp )
 			if None != m:
 				try:
-					if len(obp.split("-")) < 3: continue
+					if len(obp.split("-")) < 2: continue
+					print "%s.%s.%s" % (obp.split("-")[-2], {"nn": "n", "adj": "a", "vb": "v"}.get(obp.split("-")[-1]), g_sen.get("%s-%s" % (bsn, obx.split(":")[2][1:-1]), "01"))
 					s = corpus.wordnet.synset("%s.%s.%s" % (obp.split("-")[-2], {"nn": "n", "adj": "a", "vb": "v"}.get(obp.split("-")[-1]), g_sen.get("%s-%s" % (bsn, obx.split(":")[2][1:-1]), "01")))
 
 					for h in [s] + (s.hypernyms() if pa.wnhypannotate else []):

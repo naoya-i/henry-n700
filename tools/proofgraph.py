@@ -30,6 +30,9 @@ def main():
 			if 0 == len( t.xpath( query ) ):
 				query = "%shenry-output/result-inference[@target=\"%s\"]/proofgraph" % (pa.path, "|".join( pa.graph ))
 
+		if 0 == len(t.xpath(query)):
+			print >>sys.stderr, "No proof graph found. Did you produce the input file with \"-O proofgraph\" option?"
+			
 		for pg in t.xpath(query):
 			if "dot" == pa.format:    _outputDot(t, pg, pa)
 			elif "html" == pa.format: _outputHtml(t, pg)

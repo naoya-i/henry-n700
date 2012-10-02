@@ -551,7 +551,6 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
   bool                       f_classified = false, f_structured = false, f_kb_modified = false, f_p_found = false;
     
   for( uint_t a=0; a<args.size(); a++ ) {
-  
     /* Start interpreting the input. */
     istream                   *p_is = &cin;
     ifstream                   file;
@@ -744,7 +743,6 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
     if( "-" != args[a] ) file.close();
 
     _A(sr.getQueue().size() == 2, "Syntax error: too few parentheses.");
-    
   }
 
   if( f_structured ) {

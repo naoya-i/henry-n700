@@ -189,7 +189,7 @@ bool function::enumeratePotentialElementalHypotheses( proof_graph_t *p_out_pg, v
       if( !instantiateBackwardChainings( p_out_pg, p_out_evc, i, kb, c ) ) return false;
     }
 
-    if(n_start == p_out_pg->nodes.size()) { cerr << TS() << "No axioms was applied." << endl; break; }
+    if(n_start == p_out_pg->nodes.size()) { cerr << TS() << "d=" << d << ": no axioms was applied." << endl; break; }
     
     n_start = p_out_pg->nodes.size();
   }

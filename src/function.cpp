@@ -14,7 +14,6 @@ using namespace function;
 
  
 inline string _createSQLquery( unordered_map<int, string> *p_out_vars, logical_function_t &cnf_lf, bool f_all_placeholder=false ) {
-  
   vector<string>     query_sel, query_from, query_where, query_where_pred;
   unordered_map<store_item_t, unordered_set<string> > argeq, predeq;
           
@@ -220,7 +219,7 @@ bool function::enumeratePotentialElementalHypotheses( proof_graph_t *p_out_pg, v
   
 }
 
-bool function::instantiateBackwardChainings( proof_graph_t *p_out_pg, variable_cluster_t *p_out_evc, int n_obs, const knowledge_base_t &kb, const inference_configuration_t &c ) {
+bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cluster_t *p_out_evc, int n_obs, const knowledge_base_t &kb, const inference_configuration_t &c) {
 
   if( p_out_pg->nodes[ n_obs ].depth > (signed)c.depthlimit-1 ) return true;
   
@@ -248,11 +247,46 @@ bool function::instantiateBackwardChainings( proof_graph_t *p_out_pg, variable_c
 
       if( !sr.stack.isFunctor( "B" ) ) continue;
         
-      int i_lf = sr.stack.findFunctorArgument( ImplicationString ), i_name = sr.stack.findFunctorArgument( "name" );
+      int i_lf = sr.stack.findFunctorArgument(ImplicationString), i_name = sr.stack.findFunctorArgument("name");
+
+      if(-1 == i_lf) {
+        int                i_inc     = sr.stack.findFunctorArgument(IncString); if(-1 == i_inc) continue;
+        logical_function_t lf( *sr.stack.children[i_inc] );
+        string             axiom_str = lf.toString();
+      
+        /* Already applied? */
+        if( p_out_pg->p_x_axiom[n_obs][axiom_str] > 0 ) continue;
+        
+        /* Find the inconsistent pair! */
+        const vector<int> *p_nodes;
+        if(!p_out_pg->getNode( &p_nodes, lf.branches[0].lit.predicate, lf.branches[0].lit.terms.size())) continue;
+
+        repeat(i, p_nodes->size()) {
+          V(5) cerr << TS() << "Inconsistent: " << p_out_pg->nodes[(*p_nodes)[i]].toString() << ", " << p_out_pg->nodes[n_obs].toString() << endl;
+          
+          unifier_t theta;
+
+          repeat(t1, lf.branches[0].lit.terms.size()) {
+            repeat(t2, lf.branches[1].lit.terms.size()) {
+              if(lf.branches[0].lit.terms[t1] == lf.branches[1].lit.terms[t2]) {
+                theta.add(p_out_pg->nodes[(*p_nodes)[i]].lit.terms[t1], p_out_pg->nodes[n_obs].lit.terms[t2]);
+              }
+            } }
+
+          p_out_pg->p_x_axiom[n_obs][axiom_str] = 1;
+          p_out_pg->p_x_axiom[(*p_nodes)[i]][axiom_str] = 1;
+          p_out_pg->mutual_exclusive_nodes.push_back(make_pair(make_pair((*p_nodes)[i], n_obs), theta));
+        }
+        
+        continue;
+      }
       
       /* For each clause that has the literal n_obs in its right-hand side, */
       logical_function_t lf( *sr.stack.children[i_lf] );
       string             axiom_str = lf.toString();
+      
+      /* Already applied? */
+      if( p_out_pg->p_x_axiom[n_obs][axiom_str] > 0 ) continue;
 
       if( applied_axioms.end() != applied_axioms.find(axiom_str) ) continue;
       applied_axioms.insert( axiom_str );
@@ -317,9 +351,6 @@ bool function::instantiateBackwardChainings( proof_graph_t *p_out_pg, variable_c
         rhs_single.push_back(n_obs); rhs_lf.push_back(lf.branches[1].lit);
         rhs_collections.push_back(make_pair(rhs_lf,rhs_single));
       }
-
-      /* Already applied? */
-      if( p_out_pg->p_x_axiom[n_obs][axiom_str] > 0 ) continue;
 
       if(rhs_collections.size() > 0)
         p_out_pg->p_x_axiom[n_obs][axiom_str] = 1;
@@ -738,6 +769,36 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
       fc_conjduty.apply( p_out_lp, "fc_cjd_" + pg.nodes[i].lit.toString(), true );
     }
   }
+
+  /* Factor: Inconsistent. */
+  repeat(i, pg.mutual_exclusive_nodes.size()) {
+    pg_node_t n1 = pg.nodes[pg.mutual_exclusive_nodes[i].first.first], n2 = pg.nodes[pg.mutual_exclusive_nodes[i].first.second];
+    
+    lp_constraint_t con_m("inc", LessEqual, 1);
+    con_m.push_back(_createNodeVar(p_out_lp, p_out_lprel, pg, n1.n), 1.0);
+    con_m.push_back(_createNodeVar(p_out_lp, p_out_lprel, pg, n2.n), 1.0);
+
+    const unifier_t &theta   = pg.mutual_exclusive_nodes[i].second;
+    bool             f_fails = false;
+
+    cerr << theta.toString() << endl;
+    
+    repeat(j, theta.substitutions.size()) {
+      if(g_store.isConstant(theta.substitutions[j].terms[0]) && g_store.isConstant(theta.substitutions[j].terms[1]) &&
+         theta.substitutions[j].terms[0] != theta.substitutions[j].terms[1]) { f_fails = true; break; }
+      
+      int v_coref = _createCorefVar(p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, theta.substitutions[j].terms[0], theta.substitutions[j].terms[1]);
+      if(-1 == v_coref) continue;
+
+      con_m.push_back(v_coref, 1.0);
+      con_m.rhs += 1.0;
+    }
+
+    if(f_fails) continue;
+
+    p_out_lp->addConstraint(con_m);
+  }
+  
   
   
 //           repeat( i, pg.nodes.size() ) {

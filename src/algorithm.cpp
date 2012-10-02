@@ -598,14 +598,24 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
         if( has_key( cmd, 'b' ) ) continue;
 
         /* Identify the LF part. */
-        int i_lf = sr.stack.findFunctorArgument( ImplicationString );
+        int i_lf = sr.stack.findFunctorArgument( ImplicationString ),
+          i_inc = sr.stack.findFunctorArgument( IncString );
+        
+        _SYNCHK(-1 != i_lf || -1 != i_inc, sr, "no logical connectors found.");
 
-        _SYNCHK(-1 != i_lf, sr, "no logical connectors found.");
-        _SYNCHK(sr.stack.children[i_lf]->children.size() == 3, sr, "function '=>' takes two arguments. ");
+        if(-1 != i_lf) {
+          _SYNCHK(sr.stack.children[i_lf]->children.size() == 3, sr, "function '=>' takes two arguments. ");
+        } else if(-1 != i_inc) {
+          _SYNCHK(sr.stack.children[i_inc]->children.size() == 3, sr, "function '_|_' takes two arguments. ");
+        }
         
         if( NULL != p_out_pckb ) {
-          logical_function_t lf( *sr.stack.children[i_lf] );
-                    
+          logical_function_t lf( *sr.stack.children[-1 != i_lf ? i_lf : i_inc] );
+
+          if(-1 != i_inc) {
+            _SYNCHK(Literal == lf.branches[0].opr && Literal == lf.branches[1].opr, sr, "function '_|_' takes two literals. ");
+          }
+          
           if( Literal == lf.branches[1].opr ) {
             (*p_out_pckb)[ lf.branches[1].lit.predicate ][ lf.branches[1].lit.terms.size() ].push_back( sr.stack.toString() );
             f_kb_modified = true;

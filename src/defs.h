@@ -34,6 +34,7 @@
 #define AndString "^"
 #define OrString "v"
 #define NotString "!"
+#define IncString "_|_"
 
 #define FnTrainingLabel "label"
 #define PrefixFixedWeight "!"
@@ -133,7 +134,7 @@ typedef unordered_map<string, double>          sparse_vector_t;
 
 enum output_type_t { Class, Structure };
 enum ilp_solution_type_t { Optimal, SubOptimal, NotAvailable };
-enum logical_operator_t { UnderspecifiedOperator, Literal, AndOperator, OrOperator, ImplicationOperator, NotOperator };
+enum logical_operator_t { UnderspecifiedOperator, Literal, AndOperator, OrOperator, ImplicationOperator, NotOperator, IncOperator };
 enum sampling_method_t { Random, Uniform };
 enum sexp_stack_type_t { ListStack, StringStack, TupleStack };
 enum inference_method_t { BnB, LocalSearch, RoundLP, CuttingPlaneBnB };
@@ -437,7 +438,8 @@ struct unifier_t {
   }
 
   inline void add( store_item_t x, store_item_t y ) {
-    if( shortcuts.end() != shortcuts.find(x) ) return; //|| shortcuts.end() != shortcuts.find(y) ) return;
+    if(shortcuts.end() != shortcuts.find(x)) return; //|| shortcuts.end() != shortcuts.find(y) ) return;
+    cerr << _SC(x) << "," << _SC(y) << endl;
     substitutions.push_back( literal_t( "/", x, y ) );
     shortcuts[x] = substitutions.size()-1;
   }
@@ -447,7 +449,7 @@ struct unifier_t {
     add( x, y );
   }
   
-  inline string toString() {
+  inline string toString() const {
     string exp;
     for( int i=0; i<substitutions.size(); i++ ) {
       if( substitutions[i].terms[0] == substitutions[i].terms[1] ) continue;
@@ -466,6 +468,9 @@ struct logical_function_t {
   inline logical_function_t( const sexp_stack_t &s ) : opr( UnderspecifiedOperator ) {
     if( s.isFunctor( ImplicationString ) ) {
       opr = ImplicationOperator;
+      branches.push_back( logical_function_t( *s.children[1] ) ); branches.push_back( logical_function_t( *s.children[2] ) );
+    } else if( s.isFunctor( IncString ) ) {
+      opr = IncOperator;
       branches.push_back( logical_function_t( *s.children[1] ) ); branches.push_back( logical_function_t( *s.children[2] ) );
     } else if( s.isFunctor( AndString ) || s.isFunctor( OrString ) ) {
       opr = s.isFunctor( AndString ) ? AndOperator : OrOperator;
@@ -491,6 +496,7 @@ struct logical_function_t {
     switch( opr ) {
     case Literal: { (*p_out_str) += lit.toString( f_colored ); break; }
     case ImplicationOperator: { branches[0]._print( p_out_str, f_colored ); (*p_out_str) += " => "; branches[1]._print( p_out_str, f_colored ); break; }
+    case IncOperator: { branches[0]._print( p_out_str, f_colored ); (*p_out_str) += " _|_ "; branches[1]._print( p_out_str, f_colored ); break; }
     case NotOperator: { (*p_out_str) += "!("; branches[0]._print( p_out_str, f_colored ); (*p_out_str) += ")"; break; }
     case OrOperator:
     case AndOperator: {
@@ -513,6 +519,7 @@ struct logical_function_t {
     switch( opr ) {
     case Literal: { p_out_list->push_back( &lit ); break; }
     case ImplicationOperator: { branches[0].getAllLiterals( p_out_list ); branches[1].getAllLiterals( p_out_list ); break; }
+    case IncOperator: { branches[0].getAllLiterals( p_out_list ); branches[1].getAllLiterals( p_out_list ); break; }
     case OrOperator:
     case AndOperator: {
       for( int i=0; i<branches.size(); i++ ) branches[i].getAllLiterals( p_out_list );
@@ -811,7 +818,7 @@ struct factor_t {
 
 struct proof_graph_t {
   vector<pg_node_t>     nodes;
-  vector<pair<int, int> > mutual_exclusive_nodes;
+  vector<pair<pair<int, int>, unifier_t> > mutual_exclusive_nodes;
   vector<vector<int> > hypernodes;
   vector<int>           labelnodes;
   unordered_set<string> instantiated_axioms;
@@ -928,10 +935,6 @@ struct proof_graph_t {
     
   }
   
-  inline void addMutualExclusiveness( int n1, int n2 ) {
-    mutual_exclusive_nodes.push_back( make_pair( n1, n2 ) );
-  }
-      
   inline int addNode( const literal_t &lit, pg_node_type_t type, int n_parent = -1 ) {
 
     nodes.push_back( pg_node_t( lit, type, nodes.size() ) );
@@ -1557,7 +1560,7 @@ namespace function {
     }
     return true;
   }
-
+  
   inline void catch_int( int sig_num ) {
   
     cerr << "Ctrl-C pressed." << endl;

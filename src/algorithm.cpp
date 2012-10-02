@@ -527,6 +527,8 @@ void algorithm::learn( score_function_t *p_out_sfunc, const learn_configuration_
   
 }
 
+#define _SYNCHK(x, s, e) _A(x, "Syntax error at line " << s.n_line << ":" << e << endl << s.stack.toString());
+
 bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
                           score_function_t          *p_out_sfunc,
                           knowledge_base_t          *p_out_kb,
@@ -549,7 +551,6 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
   bool                       f_classified = false, f_structured = false, f_kb_modified = false, f_p_found = false;
     
   for( uint_t a=0; a<args.size(); a++ ) {
-  
     /* Start interpreting the input. */
     istream                   *p_is = &cin;
     ifstream                   file;
@@ -565,9 +566,13 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
       
     }
 
-    for( sexp_reader_t sr(*p_is); !sr.isEnd(); ++sr ) {
+    sexp_reader_t sr(*p_is);
+    
+    for( ; !sr.isEnd(); ++sr ) {
     
       if( sr.stack.isFunctor( "include" ) ) {
+        _SYNCHK(StringStack == sr.stack.children[1]->type, sr, "what is included should be a string.");
+        
         vector<string> args_once( 1, sr.stack.children[1]->getString() );
         _moduleProcessInput( p_out_t, p_out_sfunc, p_out_kb, p_out_pckb, p_out_lc, p_out_ic, cmd, args_once );
       }
@@ -591,18 +596,34 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
     
       if( sr.stack.isFunctor( "B" ) ) {
         if( has_key( cmd, 'b' ) ) continue;
-          
-        /* Identify the LF part. */
-        int i_lf      = sr.stack.findFunctorArgument( ImplicationString );
 
+        /* Identify the LF part. */
+        int i_lf = sr.stack.findFunctorArgument( ImplicationString ),
+          i_inc = sr.stack.findFunctorArgument( IncString );
+        
+        _SYNCHK(-1 != i_lf || -1 != i_inc, sr, "no logical connectors found.");
+
+        if(-1 != i_lf) {
+          _SYNCHK(sr.stack.children[i_lf]->children.size() == 3, sr, "function '=>' takes two arguments. ");
+        } else if(-1 != i_inc) {
+          _SYNCHK(sr.stack.children[i_inc]->children.size() == 3, sr, "function '_|_' takes two arguments. ");
+        }
+        
         if( NULL != p_out_pckb ) {
-          logical_function_t lf( *sr.stack.children[i_lf] );
+          logical_function_t lf( *sr.stack.children[-1 != i_lf ? i_lf : i_inc] );
+
+          if(-1 != i_inc) {
+            _SYNCHK(Literal == lf.branches[0].opr && Literal == lf.branches[1].opr, sr, "function '_|_' takes two literals. ");
+          }
+          
           if( Literal == lf.branches[1].opr ) {
             (*p_out_pckb)[ lf.branches[1].lit.predicate ][ lf.branches[1].lit.terms.size() ].push_back( sr.stack.toString() );
             f_kb_modified = true;
-          } else {
+          } else if( AndOperator == lf.branches[1].opr ) {
             (*p_out_pckb)[ lf.branches[1].branches[0].lit.predicate ][ lf.branches[1].branches[0].lit.terms.size() ].push_back( sr.stack.toString() );
             f_kb_modified = true;
+          } else {
+            _SYNCHK(false, sr, "unsupported logical forms.");
           }
         }
       }
@@ -730,7 +751,8 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
     }
 
     if( "-" != args[a] ) file.close();
-    
+
+    _A(sr.getQueue().size() == 2, "Syntax error: too few parentheses.");
   }
 
   if( f_structured ) {

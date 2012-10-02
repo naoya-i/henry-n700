@@ -14,7 +14,6 @@ using namespace function;
 
  
 inline string _createSQLquery( unordered_map<int, string> *p_out_vars, logical_function_t &cnf_lf, bool f_all_placeholder=false ) {
-  
   vector<string>     query_sel, query_from, query_where, query_where_pred;
   unordered_map<store_item_t, unordered_set<string> > argeq, predeq;
           
@@ -169,14 +168,33 @@ bool function::enumeratePotentialElementalHypotheses( proof_graph_t *p_out_pg, v
 
     mypyobject_t::cleanTrashCan();
   }
-  
-  repeat( i, nodes_obs.size() ) {
-    if( c.isTimeout() ) return false;
-    if( ObservableNode != p_out_pg->nodes[ nodes_obs[i] ].type ) continue;
-    if( "" != p_out_pg->nodes[ nodes_obs[i] ].lit.extra && 0 == p_out_pg->nodes[ nodes_obs[i] ].lit.wa_number ) continue;
-    if( !instantiateBackwardChainings( p_out_pg, p_out_evc, nodes_obs[i], kb, c ) ) return false;
-  }
 
+  /* Reasoning on observations. */
+  // repeat( i, nodes_obs.size() ) {
+  //   if( c.isTimeout() ) return false;
+  //   if( ObservableNode != p_out_pg->nodes[ nodes_obs[i] ].type ) continue;
+  //   if( "" != p_out_pg->nodes[ nodes_obs[i] ].lit.extra && 0 == p_out_pg->nodes[ nodes_obs[i] ].lit.wa_number ) continue;
+  //   if( !instantiateBackwardChainings( p_out_pg, p_out_evc, nodes_obs[i], kb, c ) ) return false;
+  // }
+
+  /* Reasoning on abduced propositions. */
+  int n_start = 0;
+  
+  repeat( d, c.depthlimit ) {    
+    repeatf( i, 0, p_out_pg->nodes.size() ) {
+      if( c.isTimeout() ) return false;
+      if( LabelNode == p_out_pg->nodes[i].type ) continue;
+      if( "" != p_out_pg->nodes[i].lit.extra && 0 == p_out_pg->nodes[i].lit.wa_number ) continue;
+      if( !instantiateBackwardChainings( p_out_pg, p_out_evc, i, kb, c ) ) return false;
+    }
+
+    if(n_start == p_out_pg->nodes.size()) { cerr << TS() << "d=" << (1+d) << ": no axioms was applied." << endl; break; }
+    
+    cerr << TS() << "d=" << (1+d) << ": "<< (p_out_pg->nodes.size() - n_start) <<" axioms were applied." << endl;
+    
+    n_start = p_out_pg->nodes.size();
+  }
+  
   p_out_pg->addHyperNode( nodes_obs );
 
   /* Add the equality. */  
@@ -201,7 +219,7 @@ bool function::enumeratePotentialElementalHypotheses( proof_graph_t *p_out_pg, v
   
 }
 
-bool function::instantiateBackwardChainings( proof_graph_t *p_out_pg, variable_cluster_t *p_out_evc, int n_obs, const knowledge_base_t &kb, const inference_configuration_t &c ) {
+bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cluster_t *p_out_evc, int n_obs, const knowledge_base_t &kb, const inference_configuration_t &c) {
 
   if( p_out_pg->nodes[ n_obs ].depth > (signed)c.depthlimit-1 ) return true;
   
@@ -229,11 +247,46 @@ bool function::instantiateBackwardChainings( proof_graph_t *p_out_pg, variable_c
 
       if( !sr.stack.isFunctor( "B" ) ) continue;
         
-      int i_lf = sr.stack.findFunctorArgument( ImplicationString ), i_name = sr.stack.findFunctorArgument( "name" );
+      int i_lf = sr.stack.findFunctorArgument(ImplicationString), i_name = sr.stack.findFunctorArgument("name");
+
+      if(-1 == i_lf) {
+        int                i_inc     = sr.stack.findFunctorArgument(IncString); if(-1 == i_inc) continue;
+        logical_function_t lf( *sr.stack.children[i_inc] );
+        string             axiom_str = lf.toString();
+      
+        /* Already applied? */
+        if( p_out_pg->p_x_axiom[n_obs][axiom_str] > 0 ) continue;
+        
+        /* Find the inconsistent pair! */
+        const vector<int> *p_nodes;
+        if(!p_out_pg->getNode( &p_nodes, lf.branches[0].lit.predicate, lf.branches[0].lit.terms.size())) continue;
+
+        repeat(i, p_nodes->size()) {
+          V(5) cerr << TS() << "Inconsistent: " << p_out_pg->nodes[(*p_nodes)[i]].toString() << ", " << p_out_pg->nodes[n_obs].toString() << endl;
+          
+          unifier_t theta;
+
+          repeat(t1, lf.branches[0].lit.terms.size()) {
+            repeat(t2, lf.branches[1].lit.terms.size()) {
+              if(lf.branches[0].lit.terms[t1] == lf.branches[1].lit.terms[t2]) {
+                theta.add(p_out_pg->nodes[(*p_nodes)[i]].lit.terms[t1], p_out_pg->nodes[n_obs].lit.terms[t2]);
+              }
+            } }
+
+          p_out_pg->p_x_axiom[n_obs][axiom_str] = 1;
+          p_out_pg->p_x_axiom[(*p_nodes)[i]][axiom_str] = 1;
+          p_out_pg->mutual_exclusive_nodes.push_back(make_pair(make_pair((*p_nodes)[i], n_obs), theta));
+        }
+        
+        continue;
+      }
       
       /* For each clause that has the literal n_obs in its right-hand side, */
       logical_function_t lf( *sr.stack.children[i_lf] );
       string             axiom_str = lf.toString();
+      
+      /* Already applied? */
+      if( p_out_pg->p_x_axiom[n_obs][axiom_str] > 0 ) continue;
 
       if( applied_axioms.end() != applied_axioms.find(axiom_str) ) continue;
       applied_axioms.insert( axiom_str );
@@ -261,21 +314,22 @@ bool function::instantiateBackwardChainings( proof_graph_t *p_out_pg, variable_c
           if( SQLITE_OK != sqlite3_prepare_v2(p_out_pg->p_db, query.c_str(), -1, &p_stmt, 0) ) { E( "Invalid query: " << query.c_str() ); continue; }
           if( 0 == (num_cols = sqlite3_column_count(p_stmt)) ) sqlite3_finalize(p_stmt);
           else {
-            while( SQLITE_ROW == sqlite3_step(p_stmt) ) {
+            while( SQLITE_ROW == sqlite3_step(p_stmt) ) {              
               repeat( k, lf.branches[1].branches.size() ) {
-                if( NULL != (p_val = (char *)sqlite3_column_text(p_stmt, (MaxBasicProp+MaxArguments)*k)) ) {
+                if( NULL != (p_val = (char *)sqlite3_column_text(p_stmt, (MaxBasicProp+MaxArguments)*k)) ) {                  
                   if( !getMGU( &theta, lf.branches[1].branches[k].lit, p_out_pg->nodes[ atoi(p_val) ].lit ) ) goto BED;
                   rhs_candidates.push_back( atoi(p_val) );
                   rhs_literals.push_back(lf.branches[1].branches[k].lit);
                 }
               }
-
+              
               {
                 unordered_set<int> aobss(rhs_candidates.begin(), rhs_candidates.end());
                 if(aobss.size() != rhs_candidates.size()) goto BED;
               }
-
+              
               rhs_collections.push_back(make_pair(rhs_literals, rhs_candidates));
+              continue;
               
             BED:
               theta = unifier_t(); rhs_candidates.clear(); rhs_literals.clear();
@@ -298,6 +352,9 @@ bool function::instantiateBackwardChainings( proof_graph_t *p_out_pg, variable_c
         rhs_collections.push_back(make_pair(rhs_lf,rhs_single));
       }
 
+      if(rhs_collections.size() > 0)
+        p_out_pg->p_x_axiom[n_obs][axiom_str] = 1;
+      
       repeat(i, rhs_collections.size()) {
         unifier_t theta;
         bool      f_inc = false;
@@ -404,16 +461,6 @@ bool function::instantiateBackwardChainings( proof_graph_t *p_out_pg, variable_c
           pg_hypernode_t hn = p_out_pg->addHyperNode( backchained_literals );
           repeat( j, rhs_collections[i].second.size() )
             p_out_pg->addEdge( rhs_collections[i].second[j], hn, -1 != i_name ? (-1 != i_name ? sr.stack.children[i_name]->children[1]->getString() : "?") : "" );
-
-          /* Perform further backward-inference on the back-chained literal. */
-          bool f_bc_ret = false;
-          
-          repeat( j, backchained_literals.size() ) {
-            if( WeightedAbduction != c.p_sfunc->tp || (WeightedAbduction == c.p_sfunc->tp && 0.0 < p_out_pg->nodes[backchained_literals[j]].lit.wa_number) )
-              f_bc_ret |= instantiateBackwardChainings( p_out_pg, p_out_evc, backchained_literals[j], kb, c );
-          }
-
-          if( !f_bc_ret ) return false;
         }
       }
     }
@@ -421,7 +468,6 @@ bool function::instantiateBackwardChainings( proof_graph_t *p_out_pg, variable_c
   }
 
   return true;
-  
 }
 
 inline int _getCorefVar( store_item_t t1, store_item_t t2, const lp_problem_mapping_t &lprel ) {
@@ -723,6 +769,36 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
       fc_conjduty.apply( p_out_lp, "fc_cjd_" + pg.nodes[i].lit.toString(), true );
     }
   }
+
+  /* Factor: Inconsistent. */
+  repeat(i, pg.mutual_exclusive_nodes.size()) {
+    pg_node_t n1 = pg.nodes[pg.mutual_exclusive_nodes[i].first.first], n2 = pg.nodes[pg.mutual_exclusive_nodes[i].first.second];
+    
+    lp_constraint_t con_m("inc", LessEqual, 1);
+    con_m.push_back(_createNodeVar(p_out_lp, p_out_lprel, pg, n1.n), 1.0);
+    con_m.push_back(_createNodeVar(p_out_lp, p_out_lprel, pg, n2.n), 1.0);
+
+    const unifier_t &theta   = pg.mutual_exclusive_nodes[i].second;
+    bool             f_fails = false;
+
+    cerr << theta.toString() << endl;
+    
+    repeat(j, theta.substitutions.size()) {
+      if(g_store.isConstant(theta.substitutions[j].terms[0]) && g_store.isConstant(theta.substitutions[j].terms[1]) &&
+         theta.substitutions[j].terms[0] != theta.substitutions[j].terms[1]) { f_fails = true; break; }
+      
+      int v_coref = _createCorefVar(p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, theta.substitutions[j].terms[0], theta.substitutions[j].terms[1]);
+      if(-1 == v_coref) continue;
+
+      con_m.push_back(v_coref, 1.0);
+      con_m.rhs += 1.0;
+    }
+
+    if(f_fails) continue;
+
+    p_out_lp->addConstraint(con_m);
+  }
+  
   
   
 //           repeat( i, pg.nodes.size() ) {
@@ -1558,7 +1634,7 @@ bool function::readPrecompiledKB( knowledge_base_t *p_out_kb, const string &file
   if( !ifs_pckb.is_open() ) return false;
   
   /* Read the header. */
-  V(5) cerr << TS() << "readPrecompiledKB: Loading header..." << endl;
+  V(1) cerr << TS() << "readPrecompiledKB: Loading header..." << endl;
   
   int num_axioms, size_header = 0;
   ifs_pckb.read( (char *)&num_axioms, sizeof(int) );
@@ -1624,6 +1700,7 @@ void proof_graph_t::printGraph( const linear_programming_problem_t &lpp, const l
     repeat( j, p_unifiables->size() ) {
       uint_t nj = (*p_unifiables)[j];
 
+      if(g_store.isEqual(nodes[i].lit.predicate, "!=")) continue;
       if( i == nj ) continue;
       
       unordered_map<int, int>::const_iterator iter_vj = lprel.n2v.find(nj);
@@ -1693,6 +1770,8 @@ sexp_reader_t &sexp_reader_t::operator++() {
   while( m_stream.good() ) {
 
     char c = m_stream.get();
+
+    if( '\n' == c ) n_line++;
     
     if( '\\' != last_c && ';' == c ) { f_comment = true; continue; }
     if( f_comment ) {
@@ -1705,6 +1784,7 @@ sexp_reader_t &sexp_reader_t::operator++() {
     case ListStack: {
       if( '(' == c ) { m_stack.push_back( new_stack( sexp_stack_t(ListStack) ) ); }
       else if( ')' == c ) {
+        _A( m_stack.size() >= 2, "Syntax error at " << n_line << ": too many parentheses." << endl << m_stack.back()->toString() );
         m_stack[ m_stack.size()-2 ]->children.push_back( m_stack.back() ); m_stack.pop_back();
         if( TupleStack == m_stack.back()->children[0]->type && "quote" == m_stack.back()->children[0]->children[0]->str ) {
           m_stack[ m_stack.size()-2 ]->children.push_back( m_stack.back() ); m_stack.pop_back();

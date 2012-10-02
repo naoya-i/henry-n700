@@ -735,11 +735,20 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
         } }
     }
 
-    if( g_store.isEqual( pg.nodes[i].lit.predicate, "!=" ) && ObservableNode == pg.nodes[i].type ) {
+    if(g_store.isEqual( pg.nodes[i].lit.predicate, "!=" )) {
       repeat( j, pg.nodes[i].lit.terms.size() ) {
         repeatf( k, j+1, pg.nodes[i].lit.terms.size() ) {
-          p_out_lp->variables[ _createCorefVar( p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg.nodes[i].lit.terms[j], pg.nodes[i].lit.terms[k] ) ].fixValue( 0.0 );
-          V(5) cerr << TS() << "Non-merge: " << _SC(pg.nodes[i].lit.terms[j]) << "," << _SC(pg.nodes[i].lit.terms[k]) << endl;
+          if(ObservableNode == pg.nodes[i].type) {
+            p_out_lp->variables[ _createCorefVar( p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg.nodes[i].lit.terms[j], pg.nodes[i].lit.terms[k] ) ].fixValue( 0.0 );
+            V(5) cerr << TS() << "Non-merge: " << _SC(pg.nodes[i].lit.terms[j]) << "," << _SC(pg.nodes[i].lit.terms[k]) << endl;
+            continue;
+          }
+            
+          /* Prohibit variables from being unified if this literal is hypothesized. */
+          lp_constraint_t con_pu("", LessEqual, 1.0);
+          con_pu.push_back(_createNodeVar(p_out_lp, p_out_lprel, pg, i), 1.0);
+          con_pu.push_back(_createCorefVar(p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg.nodes[i].lit.terms[j], pg.nodes[i].lit.terms[k]), 1.0);
+          p_out_lp->addConstraint(con_pu);
         } }
     }
     

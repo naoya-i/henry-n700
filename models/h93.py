@@ -23,10 +23,12 @@ def cbScoreFunction( ctx ):
 
 	for p in set_p:
 		if henryext.isTimeout(ctx): return ret
-		if p[0] in ["=", "!="]: continue
+		if "=" == p[0]: continue
 
 		# COST FOR p.
 		ret += [([["p%d" % p[2]]], "!HYPOTHESIZED_%s" % (p[0]), -p[5])]
+
+		if "!=" == p[0]: continue
 		
 		# CREATE EXPLANATION FACTORS FOR p.
 		dnf_expl = []

@@ -577,6 +577,8 @@ struct pg_node_t {
   unordered_set<string> axiom_used;
   unordered_set<int>    nodes_appeared, parent_node, rhs;
   
+  vector<pair<int, int> > nonunifycond;
+  
   inline pg_node_t( const literal_t &_lit, pg_node_type_t _type, int _n ) : n(_n), depth(0), obs_node(-1), lit( _lit ), type( _type ) {};
 
   inline string toString() const {

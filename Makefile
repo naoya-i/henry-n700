@@ -1,5 +1,5 @@
 
-OBJS=src/algorithm.o src/function.o src/scoring.o src/ilp.o
+OBJS=src/algorithm.o src/function.o src/ilp.o
 
 CC=g++
 LDFLAGS=-lpython2.7 -lsqlite3

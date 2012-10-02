@@ -254,7 +254,7 @@ struct store_t {
   }
   
   inline string claim( store_item_t i ) const { return 0 <= i && i < items.size() ? items[ i ] : ""; }
-  inline bool isConstant( store_item_t i ) const { char c = items[i][0]; return ('A' <= c && c <= 'Z'); }
+  inline bool isConstant( store_item_t i ) const { char c = items[i][0]; return 'A' <= c && c <= 'Z'; }
   inline bool isUnknown( store_item_t i ) const { return '_' == items[i][0]; };
   inline bool isEqual( store_item_t i, const string &val ) { return val == items[ i ]; }
   inline bool isNegative( store_item_t i ) const { return '-' == items[i][0]; }
@@ -437,7 +437,7 @@ struct unifier_t {
   }
 
   inline void add( store_item_t x, store_item_t y ) {
-    if( shortcuts.end() != shortcuts.find(x) || shortcuts.end() != shortcuts.find(y) ) return;
+    if( shortcuts.end() != shortcuts.find(x) ) return; //|| shortcuts.end() != shortcuts.find(y) ) return;
     substitutions.push_back( literal_t( "/", x, y ) );
     shortcuts[x] = substitutions.size()-1;
   }

@@ -282,7 +282,7 @@ bool function::instantiateBackwardChainings( proof_graph_t *p_out_pg, variable_c
           else {
             while( SQLITE_ROW == sqlite3_step(p_stmt) ) {              
               repeat( k, lf.branches[1].branches.size() ) {
-                if( NULL != (p_val = (char *)sqlite3_column_text(p_stmt, (MaxBasicProp+MaxArguments)*k)) ) {
+                if( NULL != (p_val = (char *)sqlite3_column_text(p_stmt, (MaxBasicProp+MaxArguments)*k)) ) {                  
                   if( !getMGU( &theta, lf.branches[1].branches[k].lit, p_out_pg->nodes[ atoi(p_val) ].lit ) ) goto BED;
                   rhs_candidates.push_back( atoi(p_val) );
                   rhs_literals.push_back(lf.branches[1].branches[k].lit);
@@ -295,6 +295,7 @@ bool function::instantiateBackwardChainings( proof_graph_t *p_out_pg, variable_c
               }
               
               rhs_collections.push_back(make_pair(rhs_literals, rhs_candidates));
+              continue;
               
             BED:
               theta = unifier_t(); rhs_candidates.clear(); rhs_literals.clear();

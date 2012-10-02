@@ -56,6 +56,8 @@
 #define W(x) cerr << "\33[0;41m * WARNING * \33[0m" << x << endl;
 #define _N(x) cerr << "\33[1;40m" << x << "\33[0m" << endl;
 
+#define _A(x, m) if(!(x)) { E(m); throw; }
+
 #define foreach(T, i, v) for( T::iterator i = (v).begin(); (v).end() != i; ++i )
 #define foreachr(T, i, v) for( T::reverse_iterator i = (v).rbegin(); (v).rend() != i; ++i )
 #define foreachc(T, i, v) for( T::const_iterator i = (v).begin(); (v).end() != i; ++i )
@@ -321,8 +323,11 @@ class sexp_reader_t {
   
  public:
   sexp_stack_t &stack;
+  int           n_line;
   
-  inline sexp_reader_t( istream &_stream ) : m_stream( _stream ), stack( m_damn ) { m_stack.push_back( new_stack( sexp_stack_t(ListStack) ) ); ++(*this); };
+  inline sexp_reader_t( istream &_stream ) : n_line(1), m_stream( _stream ), stack( m_damn ) { m_stack.push_back( new_stack( sexp_stack_t(ListStack) ) ); ++(*this); };
+  inline deque<sexp_stack_t*> &getQueue() { return m_stack; }
+  
   sexp_reader_t& operator++();
   bool   isEnd() { return !m_stream.good(); }
 };

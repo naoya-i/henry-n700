@@ -1705,6 +1705,8 @@ sexp_reader_t &sexp_reader_t::operator++() {
   while( m_stream.good() ) {
 
     char c = m_stream.get();
+
+    if( '\n' == c ) n_line++;
     
     if( '\\' != last_c && ';' == c ) { f_comment = true; continue; }
     if( f_comment ) {
@@ -1717,6 +1719,7 @@ sexp_reader_t &sexp_reader_t::operator++() {
     case ListStack: {
       if( '(' == c ) { m_stack.push_back( new_stack( sexp_stack_t(ListStack) ) ); }
       else if( ')' == c ) {
+        _A( m_stack.size() >= 2, "Syntax error at " << n_line << ": too many parentheses." << endl << m_stack.back()->toString() );
         m_stack[ m_stack.size()-2 ]->children.push_back( m_stack.back() ); m_stack.pop_back();
         if( TupleStack == m_stack.back()->children[0]->type && "quote" == m_stack.back()->children[0]->children[0]->str ) {
           m_stack[ m_stack.size()-2 ]->children.push_back( m_stack.back() ); m_stack.pop_back();

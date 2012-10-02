@@ -527,6 +527,8 @@ void algorithm::learn( score_function_t *p_out_sfunc, const learn_configuration_
   
 }
 
+#define _SYNCHK(x, s, e) _A(x, "Syntax error at line " << s.n_line << ":" << e << endl << s.stack.toString());
+
 bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
                           score_function_t          *p_out_sfunc,
                           knowledge_base_t          *p_out_kb,
@@ -565,9 +567,13 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
       
     }
 
-    for( sexp_reader_t sr(*p_is); !sr.isEnd(); ++sr ) {
+    sexp_reader_t sr(*p_is);
+    
+    for( ; !sr.isEnd(); ++sr ) {
     
       if( sr.stack.isFunctor( "include" ) ) {
+        _SYNCHK(StringStack == sr.stack.children[1]->type, sr, "what is included should be a string.");
+        
         vector<string> args_once( 1, sr.stack.children[1]->getString() );
         _moduleProcessInput( p_out_t, p_out_sfunc, p_out_kb, p_out_pckb, p_out_lc, p_out_ic, cmd, args_once );
       }
@@ -591,18 +597,24 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
     
       if( sr.stack.isFunctor( "B" ) ) {
         if( has_key( cmd, 'b' ) ) continue;
-          
-        /* Identify the LF part. */
-        int i_lf      = sr.stack.findFunctorArgument( ImplicationString );
 
+        /* Identify the LF part. */
+        int i_lf = sr.stack.findFunctorArgument( ImplicationString );
+
+        _SYNCHK(-1 != i_lf, sr, "no logical connectors found.");
+        _SYNCHK(sr.stack.children[i_lf]->children.size() == 3, sr, "function '=>' takes two arguments. ");
+        
         if( NULL != p_out_pckb ) {
           logical_function_t lf( *sr.stack.children[i_lf] );
+                    
           if( Literal == lf.branches[1].opr ) {
             (*p_out_pckb)[ lf.branches[1].lit.predicate ][ lf.branches[1].lit.terms.size() ].push_back( sr.stack.toString() );
             f_kb_modified = true;
-          } else {
+          } else if( AndOperator == lf.branches[1].opr ) {
             (*p_out_pckb)[ lf.branches[1].branches[0].lit.predicate ][ lf.branches[1].branches[0].lit.terms.size() ].push_back( sr.stack.toString() );
             f_kb_modified = true;
+          } else {
+            _SYNCHK(false, sr, "unsupported logical forms.");
           }
         }
       }
@@ -730,6 +742,8 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
     }
 
     if( "-" != args[a] ) file.close();
+
+    _A(sr.getQueue().size() == 2, "Syntax error: too few parentheses.");
     
   }
 

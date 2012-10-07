@@ -190,7 +190,7 @@ def _outputDot(t, pg, pa):
 		if not pa.potential and "yes" != lit.attrib["active"]: continue
 
 		nstr = "n%s [shape=\"none\", label=\"%s\", fontcolor=\"%s\"]" % (
-			lit.attrib["id"], lit.text,
+			lit.attrib["id"], re.sub("!=\((.*?),(.*?)\)", r"\1 != \2", lit.text),
 			"#000000" if "yes" == lit.attrib["active"] else "#cccccc" )
 
 		if "2" == lit.attrib[ "type" ]: obs_nodes += [nstr]

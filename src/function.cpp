@@ -188,7 +188,7 @@ bool function::enumeratePotentialElementalHypotheses( proof_graph_t *p_out_pg, v
       if( !instantiateBackwardChainings( p_out_pg, p_out_evc, i, kb, c ) ) return false;
     }
 
-    if(n_start == p_out_pg->nodes.size()) { cerr << TS() << "d=" << (1+d) << ": no axioms was applied." << endl; break; }
+    if(n_start == p_out_pg->nodes.size()) { cerr << TS() << "d=" << (1+d) << ": no axioms were applied." << endl; break; }
     
     cerr << TS() << "d=" << (1+d) << ": "<< (p_out_pg->nodes.size() - n_start) <<" axioms were applied." << endl;
     
@@ -1697,7 +1697,6 @@ void proof_graph_t::printGraph( const linear_programming_problem_t &lpp, const l
   for( uint_t i=0; i<nodes.size(); i++ ) {
     unordered_map<int, int>::const_iterator iter_v = lprel.n2v.find(i);
     if( lprel.n2v.end() == iter_v ) continue;
-    if(g_store.isEqual(nodes[i].lit.predicate, "!=")) continue;
     
     (*p_out) << "<literal id=\""<< i <<"\" type=\""<< nodes[i].type <<"\" active=\""<< (lpp.variables[ iter_v->second ].optimized < 0.5 ? "no" : "yes") <<"\">"
          << nodes[i].toString() << "</literal>" << endl;

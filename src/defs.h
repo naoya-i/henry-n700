@@ -1121,7 +1121,7 @@ struct inference_configuration_t {
   
   inline inference_configuration_t( score_function_t &s ) :
     ilp(false), proofgraph(false), ignore_weight(false), use_cache(false), is_ilp_verbose(false), show_variable_cluster(false),
-    show_statistics(false), k_best(1), f_use_temporal_weights(false), f_default_weight1(false),
+    show_statistics(true), k_best(1), f_use_temporal_weights(false), f_default_weight1(false),
     loss(1.0), p_sfunc( &s ), initial_label_index(99999), output_info(""),
     method(LocalSearch), objfunc(Cost), nbthreads(8),
     cpi_max_iteration(9999), cpi_timelimit(9999)

@@ -1733,7 +1733,7 @@ void proof_graph_t::printGraph( const linear_programming_problem_t &lpp, const l
       f_fails |= lpp.variables[ iter_v->second ].optimized < 0.5;
       f_fails |= lpp.variables[ iter_vj->second ].optimized < 0.5;
 
-      (*p_out) << "<unification l1=\""<< i <<"\" l2=\""<< nj << "\" unifier=\""<< ::join(subs.begin(), subs.end(), ", ") << "\" active=\""<< ((lpp.variables[ iter_v->second ].optimized > 0.5 && lpp.variables[ iter_vj->second ].optimized > 0.5) && (num_unified >= 1 || !f_fails) ? "yes" : "no") << "\" />" << endl;
+      (*p_out) << "<unification l1=\""<< i <<"\" l2=\""<< nj << "\" unifier=\""<< ::join(subs.begin(), subs.end(), ", ") << "\" active=\""<< ((lpp.variables[ iter_v->second ].optimized > 0.5 && lpp.variables[ iter_vj->second ].optimized > 0.5) && (/*num_unified >= 1 || */!f_fails) ? "yes" : "no") << "\" />" << endl;
     }
     
   }

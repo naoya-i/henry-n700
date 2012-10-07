@@ -439,7 +439,6 @@ struct unifier_t {
 
   inline void add( store_item_t x, store_item_t y ) {
     if(shortcuts.end() != shortcuts.find(x)) return; //|| shortcuts.end() != shortcuts.find(y) ) return;
-    cerr << _SC(x) << "," << _SC(y) << endl;
     substitutions.push_back( literal_t( "/", x, y ) );
     shortcuts[x] = substitutions.size()-1;
   }

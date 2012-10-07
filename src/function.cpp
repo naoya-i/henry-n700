@@ -789,8 +789,6 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
 
     const unifier_t &theta   = pg.mutual_exclusive_nodes[i].second;
     bool             f_fails = false;
-
-    cerr << theta.toString() << endl;
     
     repeat(j, theta.substitutions.size()) {
       if(g_store.isConstant(theta.substitutions[j].terms[0]) && g_store.isConstant(theta.substitutions[j].terms[1]) &&
@@ -1699,6 +1697,7 @@ void proof_graph_t::printGraph( const linear_programming_problem_t &lpp, const l
   for( uint_t i=0; i<nodes.size(); i++ ) {
     unordered_map<int, int>::const_iterator iter_v = lprel.n2v.find(i);
     if( lprel.n2v.end() == iter_v ) continue;
+    if(g_store.isEqual(nodes[i].lit.predicate, "!=")) continue;
     
     (*p_out) << "<literal id=\""<< i <<"\" type=\""<< nodes[i].type <<"\" active=\""<< (lpp.variables[ iter_v->second ].optimized < 0.5 ? "no" : "yes") <<"\">"
          << nodes[i].toString() << "</literal>" << endl;

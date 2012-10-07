@@ -804,6 +804,10 @@ bool _moduleProcessInferOptions( inference_configuration_t *p_out_con, command_o
   p_out_con->extension_module      = cmd[ 'e' ];
   p_out_con->k_best                = atoi(cmd[ 'k' ].c_str());
 
+  if(has_key(cmd, 'X')) {
+    p_out_con->prohibited_literals.insert(atoi(cmd['X'].c_str()));
+  }
+  
   if( has_key( cmd, 'e' ) ) {
     g_ext.filename = p_out_con->extension_module;
     g_ext.args     = cmd[ 'f' ];
@@ -906,7 +910,7 @@ int main( int argc, char **pp_args ) {
 
   command_option_t cmd;
   vector<string>   args;
-  function::getParsedOption( &cmd, &args, "m:v:i:b:C:N:t:T:w:E:O:o:p:d:c:e:f:k:S:", argc, pp_args );
+  function::getParsedOption( &cmd, &args, "m:v:i:b:C:N:t:T:w:E:O:o:p:d:c:e:f:k:S:X:", argc, pp_args );
 
   if( !has_key( cmd, 'm' ) ) { cerr << str_usage << endl; return 1; }
   

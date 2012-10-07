@@ -98,6 +98,7 @@ static const char *str_usage =
   "   -O o   Outputs information about o. (o=proofgraph|ilp|varcluster)\n"
   "   -c C   Limit the number of variable clusters to c. \n"
   "   -i I   Use the inference method i (bnb, ls, rlp, cpi).\n"
+  "   -X i   Prohibit i from being hypothesized.\n"
   ""
   "   -A    Lists used axioms.\n"
   "   -B    Lists used axioms in the best interpretation.\n"
@@ -573,7 +574,7 @@ struct pg_node_t {
   pg_node_type_t        type;
   int                   n, depth, obs_node;
   instantiated_by_t     instantiated_by;
-  unordered_set<string> axiom_used;
+  unordered_set<string> axiom_used, axiom_name_used;
   unordered_set<int>    nodes_appeared, parent_node, rhs;
   
   vector<pair<int, int> > nonunifycond;
@@ -1113,6 +1114,7 @@ struct inference_configuration_t {
   objective_function_t           objfunc;
   training_data_t                training_instance;
   unordered_map<string, double>  sol_cache;
+  unordered_set<int>             prohibited_literals;
   bool                           use_cache, ignore_weight, proofgraph, ilp, is_ilp_verbose, show_variable_cluster, show_statistics;
 
   /* For cutting plane */

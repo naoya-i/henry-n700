@@ -280,6 +280,15 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
         
         continue;
       }
+
+      if(-1 != i_name) {
+        string name_axiom = sr.stack.children[i_name]->children[1]->getString();
+        if(string::npos != name_axiom.find("*")) {
+          /* How many times is this axioms applied so far? */
+          int num_limit = atoi(name_axiom.substr(name_axiom.find("*")+1).c_str());
+          if(num_limit <= p_out_pg->nodes[n_obs].axiom_name_used.count(name_axiom)) continue;
+        } }
+
       
       /* For each clause that has the literal n_obs in its right-hand side, */
       logical_function_t lf( *sr.stack.children[i_lf] );
@@ -419,6 +428,8 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
             n_backchained = recycles[0];
             p_out_pg->nodes[n_backchained].axiom_used.insert( p_out_pg->nodes[n_obs].axiom_used.begin(), p_out_pg->nodes[n_obs].axiom_used.end() );
             p_out_pg->nodes[n_backchained].axiom_used.insert( axiom_str );
+            p_out_pg->nodes[n_backchained].axiom_name_used = p_out_pg->nodes[n_obs].axiom_name_used;
+            p_out_pg->nodes[n_backchained].axiom_name_used.insert(-1 != i_name ? (-1 != i_name ? sr.stack.children[i_name]->children[1]->getString() : "?") : "");
             p_out_pg->nodes[n_backchained].nodes_appeared.insert( n_obs );
             p_out_pg->nodes[n_backchained].nodes_appeared.insert(rhs_collections[i].second.begin(), rhs_collections[i].second.end());
             p_out_pg->nodes[n_backchained].parent_node.insert( n_obs );
@@ -442,6 +453,8 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
             p_out_pg->nodes[n_backchained].instantiated_by.where  = j;
             p_out_pg->nodes[n_backchained].axiom_used.insert( p_out_pg->nodes[n_obs].axiom_used.begin(), p_out_pg->nodes[n_obs].axiom_used.end() );
             p_out_pg->nodes[n_backchained].axiom_used.insert( axiom_str );
+            p_out_pg->nodes[n_backchained].axiom_name_used = p_out_pg->nodes[n_obs].axiom_name_used;
+            p_out_pg->nodes[n_backchained].axiom_name_used.insert(-1 != i_name ? (-1 != i_name ? sr.stack.children[i_name]->children[1]->getString() : "?") : "");
             p_out_pg->nodes[n_backchained].nodes_appeared         = p_out_pg->nodes[n_obs].nodes_appeared;
             p_out_pg->nodes[n_backchained].nodes_appeared.insert(rhs_collections[i].second.begin(), rhs_collections[i].second.end());
             p_out_pg->nodes[n_backchained].lit.wa_number         *= rhs_cost;
@@ -723,7 +736,7 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
 
   /* Basic component. */
   repeat( i, pg.nodes.size() ) {
-
+    
     if(LabelNode == pg.nodes[i].type) _createNodeVar(p_out_lp, p_out_lprel, pg, i);
     
     /* Specal treatment for (in)equality. */
@@ -776,6 +789,10 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
       if( fc_conjduty.triggers.size() > 0 ) fc_conjduty.push_back( _createNodeVar( p_out_lp, p_out_lprel, pg, i ) );
 
       fc_conjduty.apply( p_out_lp, "fc_cjd_" + pg.nodes[i].lit.toString(), true );
+    }
+
+    if(c.prohibited_literals.count(i) > 0) {
+      p_out_lp->variables[_createNodeVar(p_out_lp, p_out_lprel, pg, i)].fixValue(0.0);
     }
   }
 
@@ -1732,7 +1749,8 @@ void proof_graph_t::printGraph( const linear_programming_problem_t &lpp, const l
       f_fails |= lpp.variables[ iter_v->second ].optimized < 0.5;
       f_fails |= lpp.variables[ iter_vj->second ].optimized < 0.5;
 
-      (*p_out) << "<unification l1=\""<< i <<"\" l2=\""<< nj << "\" unifier=\""<< ::join(subs.begin(), subs.end(), ", ") << "\" active=\""<< ((lpp.variables[ iter_v->second ].optimized > 0.5 && lpp.variables[ iter_vj->second ].optimized > 0.5) && (/*num_unified >= 1 || */!f_fails) ? "yes" : "no") << "\" />" << endl;
+      (*p_out) << "<unification l1=\""<< i <<"\" l2=\""<< nj << "\" unifier=\""<< ::join(subs.begin(), subs.end(), ", ")
+               << "\" active=\""<< ((/*num_unified >= 1 || */!f_fails) ? "yes" : "no") << "\" />" << endl;
     }
     
   }

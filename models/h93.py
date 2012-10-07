@@ -26,7 +26,7 @@ def cbScoreFunction( ctx ):
 		if "=" == p[0]: continue
 
 		# COST FOR p.
-		ret += [([["p%d" % p[2]]], "!HYPOTHESIZED_%s" % (p[0]), -p[5])]
+		ret += [([["p%d" % p[2]]], "!HYPOTHESIZED_%s" % (p[0]), -p[5]-0.001)]
 
 		if "!=" == p[0]: continue
 		

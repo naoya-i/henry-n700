@@ -292,7 +292,7 @@ def cbScoreFunction( ctx ):
 			if "cause"  in p[0]: predgen = "cause"
 			if "entail"  in p[0]: predgen = "entail"
 		
-		ret += [([["p%d" % p[2]]], "!HYPOTHESIZED_%s" % (predgen), -p[5])]
+		ret += [([["p%d" % p[2]]], "!HYPOTHESIZED_%s" % (predgen), -p[5]-0.001)]
 		
 		# FUNCTIONAL WORDS
 		if not pa.nofuncrel:
@@ -367,7 +367,7 @@ def cbScoreFunction( ctx ):
 					if not pa.nowep and None != cu.search(p[0]): break
 				else:
 					if not (pa.nosynunify and p[0].startswith("synset")):
-						dnf_expl += [(fc_cooc_vuall1, "UNIFY_PROPOSITIONS", 1)]
+						dnf_expl += [(fc_cooc_vuall, "UNIFY_PROPOSITIONS", 1)]
 
 			# UNIFICATION COST.
 			if not pa.nocp and p[0] == q[0] and len(p[1]) == len(q[1]) and p[2] > q[2]:
@@ -380,6 +380,7 @@ def cbScoreFunction( ctx ):
 					for matcher, after, value in g_fm:
 						fes, n = matcher.subn(after, fe)
 						fv		 = value
+						#fv     = 0
 												
 						if 0 == n: continue
 

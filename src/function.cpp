@@ -18,6 +18,8 @@ inline string _createSQLquery( unordered_map<int, string> *p_out_vars, logical_f
   unordered_map<store_item_t, unordered_set<string> > argeq, predeq;
           
   repeat( j, cnf_lf.branches.size() ) {
+    if(g_store.isEqual(cnf_lf.branches[j].lit.predicate, "!=")) continue;
+    
     query_sel.push_back( ::toString("p%d.*", 1+j) );
 
     string searchstr = g_store.claim(cnf_lf.branches[j].lit.predicate);
@@ -404,6 +406,12 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
           if( f_prohibited ) continue;
         }
 
+        /* Conditionin by equality. */
+        vector<pair<store_item_t, store_item_t> > cond_neqs;
+        repeat(j, lf.branches[1].branches.size()) {
+          if(g_store.isEqual(lf.branches[1].branches[j].lit.predicate, "!=")) cond_neqs.push_back(make_pair(lf.branches[1].branches[j].lit.terms[0], lf.branches[1].branches[j].lit.terms[1]));
+        }
+
         /* Perform backward-chaining. */
         vector<int> backchained_literals;
         
@@ -433,6 +441,7 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
             p_out_pg->nodes[n_backchained].nodes_appeared.insert( n_obs );
             p_out_pg->nodes[n_backchained].nodes_appeared.insert(rhs_collections[i].second.begin(), rhs_collections[i].second.end());
             p_out_pg->nodes[n_backchained].parent_node.insert( n_obs );
+            p_out_pg->nodes[n_backchained].cond_neqs.insert(p_out_pg->nodes[n_backchained].cond_neqs.end(), cond_neqs.begin(), cond_neqs.end());
           
           } else {
 
@@ -461,6 +470,7 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
             p_out_pg->nodes[n_backchained].lit.instantiated_by    = p_out_pg->nodes[n_backchained].instantiated_by.axiom;
             p_out_pg->nodes[n_backchained].rhs.insert(n_obs);
             p_out_pg->nodes[n_backchained].rhs.insert(rhs_collections[i].second.begin(), rhs_collections[i].second.end());          
+            p_out_pg->nodes[n_backchained].cond_neqs.insert(p_out_pg->nodes[n_backchained].cond_neqs.end(), cond_neqs.begin(), cond_neqs.end());
 
             V(5) cerr << TS() << log_head << "new Literal: " << p_out_pg->nodes[n_backchained].lit.toString() << endl;
           
@@ -527,30 +537,35 @@ int _createCorefVar( linear_programming_problem_t *p_out_lp, lp_problem_mapping_
   return ret;
 }
 
-inline int _createNodeVar( linear_programming_problem_t *p_out_lp, lp_problem_mapping_t *p_out_lprel, const proof_graph_t &pg, int n ) {
+inline int _createNodeVar( linear_programming_problem_t *p_out_lp, lp_problem_mapping_t *p_out_lprel, lp_inference_cache_t *p_out_cache, unordered_map<int, unordered_set<int> > *p_out_cu, const proof_graph_t &pg, int n ) {
   int& v_h = p_out_lprel->n2v[n];
   if( 0 != v_h ) return v_h;
   
   v_h = p_out_lp->addVariable( lp_variable_t( "h_" + pg.nodes[n].lit.toString() ) );
+
+  lp_constraint_t con_mrhs("mrhs", GreaterEqual, 0);
   
   if( ObservableNode == pg.nodes[n].type || LabelNode == pg.nodes[n].type ) p_out_lp->variables[ v_h ].fixValue( 1.0 );
   else if(2 <= pg.nodes[n].rhs.size()) {
-    /* Multiple RHS? */
-    lp_constraint_t con_mrhs("mrhs", GreaterEqual, 0);
-      
+    /* Multiple RHS? */      
     foreachc(unordered_set<int>, r, pg.nodes[n].rhs)
-      con_mrhs.push_back(_createNodeVar(p_out_lp, p_out_lprel, pg, *r), 1.0);
+      con_mrhs.push_back(_createNodeVar(p_out_lp, p_out_lprel, p_out_cache, p_out_cu, pg, *r), 1.0);
 
     con_mrhs.push_back(v_h, -1.0 * con_mrhs.vars.size());
-
-    p_out_lp->addConstraint(con_mrhs);
   }
-  
+
+  repeat(i, pg.nodes[n].cond_neqs.size()) {
+    con_mrhs.push_back(_createCorefVar(p_out_lp, p_out_lprel, p_out_cache, p_out_cu, pg.nodes[n].cond_neqs[i].first, pg.nodes[n].cond_neqs[i].second), 1.0);
+    con_mrhs.rhs += 1.0;
+  }
+
+  if(con_mrhs.vars.size() > 0) p_out_lp->addConstraint(con_mrhs);
+    
   return v_h;
 }
 
 /* and_{1,2,3} <=> h_i ^ h_c1 ^ h_c2 ^ ... ^ h_c3. */
-inline int _createConjVar( linear_programming_problem_t *p_out_lp, lp_problem_mapping_t *p_out_lprel, const proof_graph_t &pg, int n, int hn ) {
+inline int _createConjVar( linear_programming_problem_t *p_out_lp, lp_problem_mapping_t *p_out_lprel, lp_inference_cache_t *p_out_cache, unordered_map<int, unordered_set<int> > *p_out_cu, const proof_graph_t &pg, int n, int hn ) {
   int& v_hn = p_out_lprel->hn2v[hn];
   if( 0 != v_hn ) return v_hn;
 
@@ -559,9 +574,9 @@ inline int _createConjVar( linear_programming_problem_t *p_out_lp, lp_problem_ma
 
   /* and_{1,2,3} <=> h_i ^ h_c1 ^ h_c2 ^ ... ^ h_c3. */
   lp_constraint_t con( "and", Range, 0, 1 );
-  con.push_back( _createNodeVar( p_out_lp, p_out_lprel, pg, n ), 1.0 );
+  con.push_back( _createNodeVar( p_out_lp, p_out_lprel, p_out_cache, p_out_cu, pg, n ), 1.0 );
   repeat( j, pg.hypernodes[ hn ].size() )
-    con.push_back( _createNodeVar( p_out_lp, p_out_lprel, pg, pg.hypernodes[ hn ][j] ), 1.0 );
+    con.push_back( _createNodeVar( p_out_lp, p_out_lprel, p_out_cache, p_out_cu, pg, pg.hypernodes[ hn ][j] ), 1.0 );
   con.rhs = 1.0 * con.vars.size() - 1;
   con.push_back( v_hn, -1.0 * con.vars.size() );
   p_out_lp->addConstraint( con );
@@ -569,9 +584,9 @@ inline int _createConjVar( linear_programming_problem_t *p_out_lp, lp_problem_ma
   /* h_c1 ^ h_c2 ^ ... h_cn => h_i */
   lp_constraint_t con_imp( "imp", LessEqual, 0.0 );
   repeat( i, pg.hypernodes[ hn ].size() )
-    con_imp.push_back( _createNodeVar( p_out_lp, p_out_lprel, pg, pg.hypernodes[ hn ][i] ), 1.0 );
+    con_imp.push_back( _createNodeVar( p_out_lp, p_out_lprel, p_out_cache, p_out_cu, pg, pg.hypernodes[ hn ][i] ), 1.0 );
   con_imp.rhs = 1.0 * con_imp.vars.size() - 1.0;
-  con_imp.push_back( _createNodeVar( p_out_lp, p_out_lprel, pg, n ), -1.0 * con_imp.vars.size() );
+  con_imp.push_back( _createNodeVar( p_out_lp, p_out_lprel, p_out_cache, p_out_cu, pg, n ), -1.0 * con_imp.vars.size() );
   p_out_lp->addConstraint( con_imp );
   
   return v_hn;
@@ -588,8 +603,8 @@ inline int _createUniVar( linear_programming_problem_t *p_out_lp, lp_problem_map
   
   /* u <=> h_i ^ h_j ^ (forall (x_i=y_i)) */
   lp_constraint_t con_u( "", Range, 0, 1 );
-  con_u.push_back( _createNodeVar( p_out_lp, p_out_lprel, pg, ni ), 1.0 );
-  con_u.push_back( _createNodeVar( p_out_lp, p_out_lprel, pg, nj ), 1.0 );
+  con_u.push_back( _createNodeVar( p_out_lp, p_out_lprel, p_out_cache, p_out_cu, pg, ni ), 1.0 );
+  con_u.push_back( _createNodeVar( p_out_lp, p_out_lprel, p_out_cache, p_out_cu, pg, nj ), 1.0 );
 
   for( uint_t k=0; k<uni.substitutions.size(); k++ ) {
     if( uni.substitutions[k].terms[0] == uni.substitutions[k].terms[1] ) continue;
@@ -615,7 +630,7 @@ inline int _createUnifyCooccurringVar( linear_programming_problem_t *p_out_lp, l
 
   lp_constraint_t con_sc( "sc_sxyhihj"+ g_store.claim(ti) + "~" + g_store.claim(tj) + "," + "~", Range, 0, 1 );
   repeat( i, literals.size() )
-    con_sc.push_back( _createNodeVar( p_out_lp, p_out_lprel, pg, literals[i] ), 1.0 );
+    con_sc.push_back( _createNodeVar( p_out_lp, p_out_lprel, p_out_cache, p_out_cu, pg, literals[i] ), 1.0 );
   
   if( -1 != v_coref ) con_sc.push_back( v_coref, 1.0 );
           
@@ -681,7 +696,7 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
             case 'p': {
               int  p_id; sscanf( fc_name.substr(1).c_str(), "%d", &p_id );
               local_signature.push_back((f_negation?"!":"") + pg.nodes[p_id].toString());
-              fc_cnf.push_back( _createNodeVar(p_out_lp, p_out_lprel, pg, p_id), !f_negation );
+              fc_cnf.push_back( _createNodeVar(p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg, p_id), !f_negation );
               break; }
             case 'c': {
               char var1[32], var2[32]; sscanf( fc_name.substr(1).c_str(), "%s %s", var1, var2 );
@@ -737,7 +752,7 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
   /* Basic component. */
   repeat( i, pg.nodes.size() ) {
     
-    if(LabelNode == pg.nodes[i].type) _createNodeVar(p_out_lp, p_out_lprel, pg, i);
+    if(LabelNode == pg.nodes[i].type) _createNodeVar(p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg, i);
     
     /* Specal treatment for (in)equality. */
     if( g_store.isEqual( pg.nodes[i].lit.predicate, PredicateSubstitution ) && ObservableNode == pg.nodes[i].type ) {
@@ -759,7 +774,7 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
             
           /* Prohibit variables from being unified if this literal is hypothesized. */
           lp_constraint_t con_pu("", LessEqual, 1.0);
-          con_pu.push_back(_createNodeVar(p_out_lp, p_out_lprel, pg, i), 1.0);
+          con_pu.push_back(_createNodeVar(p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg, i), 1.0);
           con_pu.push_back(_createCorefVar(p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg.nodes[i].lit.terms[j], pg.nodes[i].lit.terms[k]), 1.0);
           p_out_lp->addConstraint(con_pu);
         } }
@@ -770,7 +785,7 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
     
     if( pg.edges.end() != iter_eg ) {
       repeat( j, iter_eg->second.size() ) {
-        _createConjVar( p_out_lp, p_out_lprel, pg, i, iter_eg->second[j] );
+        _createConjVar( p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg, i, iter_eg->second[j] );
       } }
     
     /* Factor: Conjunction. */
@@ -780,19 +795,19 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
       factor_t fc_conjduty( AndFactorTrigger );
 
       repeat( j, iter_n2hn->second.size() ) {
-        int v_hn = _createConjVar( p_out_lp, p_out_lprel, pg, i, iter_n2hn->second[j] );
+        int v_hn = _createConjVar( p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg, i, iter_n2hn->second[j] );
         if( 1 == pg.hypernodes[ iter_n2hn->second[j] ].size() ) continue;
       
         fc_conjduty.push_back( v_hn, false );
       }
 
-      if( fc_conjduty.triggers.size() > 0 ) fc_conjduty.push_back( _createNodeVar( p_out_lp, p_out_lprel, pg, i ) );
+      if( fc_conjduty.triggers.size() > 0 ) fc_conjduty.push_back( _createNodeVar( p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg, i ) );
 
       fc_conjduty.apply( p_out_lp, "fc_cjd_" + pg.nodes[i].lit.toString(), true );
     }
 
     if(c.prohibited_literals.count(i) > 0) {
-      p_out_lp->variables[_createNodeVar(p_out_lp, p_out_lprel, pg, i)].fixValue(0.0);
+      p_out_lp->variables[_createNodeVar(p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg, i)].fixValue(0.0);
     }
   }
 
@@ -801,8 +816,8 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
     pg_node_t n1 = pg.nodes[pg.mutual_exclusive_nodes[i].first.first], n2 = pg.nodes[pg.mutual_exclusive_nodes[i].first.second];
     
     lp_constraint_t con_m("inc", LessEqual, 1);
-    con_m.push_back(_createNodeVar(p_out_lp, p_out_lprel, pg, n1.n), 1.0);
-    con_m.push_back(_createNodeVar(p_out_lp, p_out_lprel, pg, n2.n), 1.0);
+    con_m.push_back(_createNodeVar(p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg, n1.n), 1.0);
+    con_m.push_back(_createNodeVar(p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg, n2.n), 1.0);
 
     const unifier_t &theta   = pg.mutual_exclusive_nodes[i].second;
     bool             f_fails = false;
@@ -1427,7 +1442,7 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
       factor_t fc_loss_pri( OrFactorTrigger );
       
       repeat( ipa, p_nodes->size() )
-        fc_loss_pri.push_back( _createNodeVar( p_out_lp, p_out_lprel, pg, (*p_nodes)[ipa] ) );
+        fc_loss_pri.push_back( _createNodeVar( p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg, (*p_nodes)[ipa] ) );
 
       int v_fc_loss_pri = fc_loss_pri.apply( p_out_lp, "fc_loss" + y_literals[i]->toString() );
       if( -1 != v_fc_loss_pri ) p_out_lp->variables[ v_fc_loss_pri ].obj_val = -1.0;                
@@ -1455,15 +1470,15 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
                 
                 if( pg.nodes[ (*p_nodes)[ipa] ].lit.terms[it] == pg.nodes[ (*p_nodes_j)[jpa] ].lit.terms[jt] ) {
                   factor_t fc_coocur( AndFactorTrigger );
-                  fc_coocur.push_back( _createNodeVar( p_out_lp, p_out_lprel, pg, (*p_nodes)[ipa] ) );
-                  fc_coocur.push_back( _createNodeVar( p_out_lp, p_out_lprel, pg, (*p_nodes_j)[jpa] ) );
+                  fc_coocur.push_back( _createNodeVar( p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg, (*p_nodes)[ipa] ) );
+                  fc_coocur.push_back( _createNodeVar( p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg, (*p_nodes_j)[jpa] ) );
                   fc_loss_am.push_back( fc_coocur.apply( p_out_lp, "fc_co" + pg.nodes[ (*p_nodes)[ipa] ].lit.toString() + pg.nodes[ (*p_nodes_j)[jpa] ].lit.toString() ) );
                 } else {
                   int v_coref = _getCorefVar( pg.nodes[ (*p_nodes)[ipa] ].lit.terms[it], pg.nodes[ (*p_nodes_j)[jpa] ].lit.terms[jt], (const lp_problem_mapping_t&)*p_out_lprel );
                   if( -1 == v_coref ) continue;
                   factor_t fc_coocur( AndFactorTrigger );
-                  fc_coocur.push_back( _createNodeVar( p_out_lp, p_out_lprel, pg, (*p_nodes)[ipa] ) );
-                  fc_coocur.push_back( _createNodeVar( p_out_lp, p_out_lprel, pg, (*p_nodes_j)[jpa] ) );
+                  fc_coocur.push_back( _createNodeVar( p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg, (*p_nodes)[ipa] ) );
+                  fc_coocur.push_back( _createNodeVar( p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg, (*p_nodes_j)[jpa] ) );
                   fc_coocur.push_back( v_coref );
                   fc_loss_am.push_back( fc_coocur.apply( p_out_lp, "fc_co" + pg.nodes[ (*p_nodes)[ipa] ].lit.toString() + pg.nodes[ (*p_nodes_j)[jpa] ].lit.toString() + "^" + g_store.claim(pg.nodes[ (*p_nodes_j)[jpa] ].lit.terms[jt]) + "==" + g_store.claim(pg.nodes[ (*p_nodes)[ipa] ].lit.terms[it]) ) );
                 }

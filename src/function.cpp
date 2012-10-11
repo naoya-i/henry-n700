@@ -408,8 +408,13 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
 
         /* Conditionin by equality. */
         vector<pair<store_item_t, store_item_t> > cond_neqs;
-        repeat(j, lf.branches[1].branches.size()) {
-          if(g_store.isEqual(lf.branches[1].branches[j].lit.predicate, "!=")) cond_neqs.push_back(make_pair(lf.branches[1].branches[j].lit.terms[0], lf.branches[1].branches[j].lit.terms[1]));
+        repeat(j, lf.branches[1].branches.size()) {          
+          if(g_store.isEqual(lf.branches[1].branches[j].lit.predicate, "!=")) {
+            if(-1 == theta.map(lf.branches[1].branches[j].lit.terms[0])) theta.add(lf.branches[1].branches[j].lit.terms[0], g_store.issueUnknown());
+            if(-1 == theta.map(lf.branches[1].branches[j].lit.terms[1])) theta.add(lf.branches[1].branches[j].lit.terms[1], g_store.issueUnknown());
+            
+            cond_neqs.push_back(make_pair(theta.map(lf.branches[1].branches[j].lit.terms[0]), theta.map(lf.branches[1].branches[j].lit.terms[1])));
+          }
         }
 
         /* Perform backward-chaining. */
@@ -424,7 +429,8 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
             if( !theta.isApplied( lit.terms[k] ) ) theta.add( lit.terms[k], g_store.issueUnknown() );
           
           theta.apply( &lit );
-
+          
+          
           int         n_backchained;
 
           /* If the completely same node is found, then recycle it. */
@@ -550,16 +556,17 @@ inline int _createNodeVar( linear_programming_problem_t *p_out_lp, lp_problem_ma
     /* Multiple RHS? */      
     foreachc(unordered_set<int>, r, pg.nodes[n].rhs)
       con_mrhs.push_back(_createNodeVar(p_out_lp, p_out_lprel, p_out_cache, p_out_cu, pg, *r), 1.0);
-
-    con_mrhs.push_back(v_h, -1.0 * con_mrhs.vars.size());
   }
 
   repeat(i, pg.nodes[n].cond_neqs.size()) {
-    con_mrhs.push_back(_createCorefVar(p_out_lp, p_out_lprel, p_out_cache, p_out_cu, pg.nodes[n].cond_neqs[i].first, pg.nodes[n].cond_neqs[i].second), 1.0);
-    con_mrhs.rhs += 1.0;
+    con_mrhs.push_back(_createCorefVar(p_out_lp, p_out_lprel, p_out_cache, p_out_cu, pg.nodes[n].cond_neqs[i].first, pg.nodes[n].cond_neqs[i].second), -1.0);
+    con_mrhs.rhs -= 1.0;
   }
 
-  if(con_mrhs.vars.size() > 0) p_out_lp->addConstraint(con_mrhs);
+  if(con_mrhs.vars.size() > 0) {
+    con_mrhs.push_back(v_h, -1.0 * con_mrhs.vars.size());
+    p_out_lp->addConstraint(con_mrhs);
+  }
     
   return v_h;
 }

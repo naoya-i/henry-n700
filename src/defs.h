@@ -415,6 +415,7 @@ struct literal_t {
 struct unifier_t {
   vector<literal_t>                substitutions;
   unordered_map<store_item_t, int> shortcuts;
+  unordered_map<store_item_t, store_item_t> mapping;
 
   inline unifier_t() {};
   
@@ -434,6 +435,8 @@ struct unifier_t {
     }
   }
 
+  inline store_item_t map(store_item_t x) { if(mapping.count(x) == 0) return -1; else return mapping[x]; }
+  
   inline bool isApplied( store_item_t x ) {
     return shortcuts.end() != shortcuts.find(x);
   }
@@ -441,7 +444,8 @@ struct unifier_t {
   inline void add( store_item_t x, store_item_t y ) {
     if(shortcuts.end() != shortcuts.find(x)) return; //|| shortcuts.end() != shortcuts.find(y) ) return;
     substitutions.push_back( literal_t( "/", x, y ) );
-    shortcuts[x] = substitutions.size()-1;
+    shortcuts[x]        = substitutions.size()-1;
+    mapping[x]          = y;
   }
 
   inline void add( store_item_t x, const string &variable ) {

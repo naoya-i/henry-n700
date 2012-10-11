@@ -1,5 +1,5 @@
 #
-# HENRY EXTERNAL MODULE FOR HOBBS ET AL. (93)'S WEIGHTED ABDUCTION
+0;95;c# HENRY EXTERNAL MODULE FOR HOBBS ET AL. (93)'S WEIGHTED ABDUCTION
 #
 
 import argparse
@@ -26,7 +26,7 @@ def cbScoreFunction( ctx ):
 		if "=" == p[0]: continue
 
 		# COST FOR p.
-		ret += [([["p%d" % p[2]]], "!HYPOTHESIZED_%s" % (p[0]), -p[5]-0.001)]
+		ret += [([["p%d" % p[2]]], "!HYPOTHESIZED_%s_%s" % (p[0], p[2]), -p[5]-0.001)]
 
 		if "!=" == p[0]: continue
 		
@@ -67,7 +67,7 @@ def cbScoreFunction( ctx ):
 				dnf_expl += [(fc_cooc_vuall, "UNIFY_PROPOSITIONS", 1)]
 		
 		# CREATE FEATURE FOR THE DNF.
-		ret += [([disj[0] for disj in dnf_expl], "!EXPLAINED_%s" % (p[0]), p[5])]
+		ret += [([disj[0] for disj in dnf_expl], "!EXPLAINED_%s_%s" % (p[0], p[2]), p[5])]
 			
 	return ret
 

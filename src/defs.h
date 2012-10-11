@@ -582,7 +582,7 @@ struct pg_node_t {
   inline pg_node_t( const literal_t &_lit, pg_node_type_t _type, int _n ) : n(_n), depth(0), obs_node(-1), lit( _lit ), type( _type ) {};
 
   inline string toString() const {
-    return lit.toString() + ::toString( ":%d", n );
+    return lit.toString() + ::toString( ":%d:%.2f", n, lit.wa_number );
   }
   
 };

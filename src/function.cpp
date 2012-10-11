@@ -115,7 +115,7 @@ bool function::enumeratePotentialElementalHypotheses( proof_graph_t *p_out_pg, v
 
   /* Make it relative cost. */
   repeat( i, nodes_obs.size() ) {
-    p_out_pg->nodes[nodes_obs[i]].lit.wa_number /= total_observation_cost;
+    //p_out_pg->nodes[nodes_obs[i]].lit.wa_number /= total_observation_cost;
     V(4) cerr << TS() << " Revised input: Type=" << p_out_pg->nodes[nodes_obs[i]].type << ", " << p_out_pg->nodes[nodes_obs[i]].lit.toString() << ", " << p_out_pg->nodes[nodes_obs[i]].lit.wa_number << endl;
   }
   
@@ -721,7 +721,7 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
         if(is_vua_included && 0 != feature_element_name.find(PrefixFixedWeight)) vars_unification.insert(v_fc);
         
         if( f_prohibiting || -1 != v_fc ) {
-          V(5) cerr << TS() << "New factor: " << ::join(signature.begin(), signature.end(), "/") << ":" << PyString_AsString(p_pyfen) << ":" << PyFloat_AsDouble(p_pyfev) << ":" << is_vua_included << endl;
+          V(5) cerr << TS() << "New factor: " << ::join(signature.begin(), signature.end(), "/") << ":" << PyString_AsString(p_pyfen) << ":" << PyFloat_AsDouble(p_pyfev) << ":w=" << c.p_sfunc->weights[PyString_AsString(p_pyfen)] << ":" << is_vua_included << endl;
           if(-1 != v_fc) p_out_lp->variables[ v_fc ].name += "/" + string(PyString_AsString(p_pyfen));
         }
         if( !f_prohibiting && -1 != v_fc ) { p_out_lprel->feature_vector[ v_fc ][ PyString_AsString(p_pyfen) ] += PyFloat_AsDouble(p_pyfev); }

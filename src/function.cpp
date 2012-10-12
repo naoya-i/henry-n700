@@ -372,6 +372,7 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
 
         /* Produce substitution. */
         repeat(j, rhs_collections[i].first.size()) {
+          p_out_pg->p_x_axiom[rhs_collections[i].second[j]][axiom_str] = 1;
           V(5) cerr << TS() << rhs_collections[i].first[j].toString() << "~" << p_out_pg->nodes[rhs_collections[i].second[j]].toString() << endl;
           if( !getMGU( &theta, rhs_collections[i].first[j], p_out_pg->nodes[rhs_collections[i].second[j]].lit ) ) { f_inc = true; }
         }
@@ -1774,7 +1775,6 @@ void proof_graph_t::printGraph( const linear_programming_problem_t &lpp, const l
       (*p_out) << "<unification l1=\""<< i <<"\" l2=\""<< nj << "\" unifier=\""<< ::join(subs.begin(), subs.end(), ", ")
                << "\" active=\""<< ((/*num_unified >= 1 || */!f_fails) ? "yes" : "no") << "\" />" << endl;
     }
-    
   }
   
   for( pg_edge_set_t::const_iterator iter_eg = edges.begin(); edges.end() != iter_eg; ++iter_eg ) {

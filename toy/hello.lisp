@@ -1,8 +1,8 @@
 
-(B (=> (happy x) (exam x) ) )
 (B (=> (unhappy x) (exam x) ) )
+(B (=> (happy x) (exam x) ) )
 
-(O (label (structure (^ (happy ?s) (exam ?s) ) )) (^ (exam JOHN) (unhappy x) ) )
+(O (name happy) (label (^ (happy ?s) (exam ?s) (! (unhappy ?s) ) )) (^ (exam JOHN) ) )
 
 ; 
 (O (name lingheu) (^ (john-nn x1) (kill-vb x1 x2) (mary-nn x3) (kill-vb x3 x4)) )

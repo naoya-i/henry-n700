@@ -1,7 +1,7 @@
 #pragma once
 
 #define USE_GUROBI
-//#define USE_LOCALSOLVER
+#define USE_LOCALSOLVER
 
 #include <sqlite3.h>
 
@@ -40,6 +40,7 @@
 #define PrefixFixedWeight "!"
 #define PrefixInvisibleElement "$"
 
+#define EqBias            0.0001
 #define InvalidCutoff     -9999.0
 #define InvalidFixedValue -9999.0
 
@@ -145,7 +146,7 @@ enum learn_method_t { OnlinePassiveAggressive };
 enum pg_node_type_t { UnderspecifiedNode, LogicalNetworkNode, ObservableNode, HypothesisNode, LabelNode };
 enum lp_constraint_operator_t { UnderspecifiedCopr, Equal, LessEqual, GreaterEqual, Range, SOS1, SOS2 };
 enum feature_function_t { NodeFeature, EdgeFeature };
-enum inference_result_t { Success, GenerationTimeout, ILPTimeout };
+enum inference_result_type_t { Success, GenerationTimeout, ILPTimeout };
 
 template <class K, class V> V mget( const unordered_map<K,V> &dict, K key, V def ) {
   return dict.end() != dict.find(key) ? dict.find(key)->second : def;
@@ -182,7 +183,8 @@ inline string toString( const ilp_solution_type_t& t ) {
   case Optimal: return "Optimal";
   case SubOptimal: return "SubOptimal";
   case NotAvailable: return "NotAvailable";
-  }; return "?";
+  };
+  return "?";
 }
   
 inline string TS() {
@@ -217,15 +219,12 @@ struct store_t {
   inline store_item_t cashier( const string &s ) {
     unordered_map<string, store_item_t>::iterator iter_i;
     store_item_t ret;
-#pragma omp critical (CASHIER)
-    {
-      iter_i         = s2s.find( s );
-      if( s2s.end() != iter_i ) ret = iter_i->second;
-      else {
-        items.push_back( s );
-        s2s[s]       = items.size()-1;
-        ret          = items.size()-1;
-      }
+    iter_i         = s2s.find( s );
+    if( s2s.end() != iter_i ) ret = iter_i->second;
+    else {
+      items.push_back( s );
+      s2s[s]       = items.size()-1;
+      ret          = items.size()-1;
     }
     return ret;
   }
@@ -580,10 +579,11 @@ struct pg_node_t {
   instantiated_by_t     instantiated_by;
   unordered_set<string> axiom_used, axiom_name_used;
   unordered_set<int>    nodes_appeared, parent_node, rhs;
+  bool                  f_prohibited;
   
   vector<pair<store_item_t, store_item_t> > cond_neqs;
   
-  inline pg_node_t( const literal_t &_lit, pg_node_type_t _type, int _n ) : n(_n), depth(0), obs_node(-1), lit( _lit ), type( _type ) {};
+  inline pg_node_t( const literal_t &_lit, pg_node_type_t _type, int _n ) : n(_n), depth(0), obs_node(-1), lit( _lit ), type( _type ), f_prohibited(false) {};
 
   inline string toString() const {
     return lit.toString() + ::toString( ":%d:%.2f", n, lit.wa_number );
@@ -593,14 +593,14 @@ struct pg_node_t {
 
 struct lp_variable_t {
   string name;
-  double optimized;
+  int    opt_level;
   double obj_val, init_val, fixed_val, lb, ub;
   bool   f_continuous, is_obj_square;
-  inline lp_variable_t( const string &n ) : is_obj_square(false), f_continuous(false), name(n), lb(0.0), ub(1.0), fixed_val(InvalidFixedValue), init_val(-9999.0), obj_val(0.0), optimized(0.0) {};
-  inline bool isFixed() { return InvalidFixedValue != fixed_val; };
+  inline lp_variable_t( const string &n ) : opt_level(0), is_obj_square(false), f_continuous(false), name(n), lb(0.0), ub(1.0), fixed_val(InvalidFixedValue), init_val(-9999.0), obj_val(0.0) {};
+  inline bool isFixed() const { return InvalidFixedValue != fixed_val; };
   inline void fixValue( double val ) { fixed_val = val; };
   inline void setInitialValue( double val ) { init_val = val; };
-  inline string toString() { return name + "=" + ::toString( "%f", optimized ); };
+  inline string toString() { return name + "=?"; };
 };
 
 struct lp_constraint_t {
@@ -631,9 +631,9 @@ struct lp_constraint_t {
     return false;
   }
   
-  inline bool isSatisfied( const vector<lp_variable_t> &lpvars ) const {
+  inline bool isSatisfied( const vector<double> &lpsol_optimized_values ) const {
     double val = 0.0;
-    for( int i=0; i<vars.size(); i++ ) val += lpvars[ vars[i] ].optimized * coes[i];
+    for( int i=0; i<vars.size(); i++ ) val += lpsol_optimized_values[ vars[i] ] * coes[i];
     return isSatisfied( val );
   }
   
@@ -680,11 +680,8 @@ struct lp_constraint_t {
 struct linear_programming_problem_t {
   vector<lp_variable_t>   variables;
   vector<lp_constraint_t> constraints;
-  double                  optimized_obj, cutoff;
-  ilp_solution_type_t     sol_type;
+  double                  cutoff;
 
-  vector<double> best_solution_stack, second_best_solution_stack;
-  
   inline linear_programming_problem_t() : cutoff(InvalidCutoff) {}
   
   inline int addVariable( const lp_variable_t &var ) { variables.push_back( var ); return variables.size()-1; }
@@ -709,21 +706,29 @@ struct linear_programming_problem_t {
     return exp.str();
   }
 
-  inline string solutionToString() {
+};
+
+struct lp_solution_t {
+  ilp_solution_type_t sol_type;
+  double              optimized_obj;
+  vector<double>      optimized_values;
+
+  inline lp_solution_t(const linear_programming_problem_t &lp) : sol_type(NotAvailable) { optimized_values.resize(lp.variables.size()); }
+
+  inline string toString(const linear_programming_problem_t &lp) const {
     ostringstream exp;
     exp << "<solution>" << endl;
 
-    for( int i=0; i<variables.size(); i++ )
-      exp << "<variable name=\""<< variables[i].name <<"\" coefficient=\""<< variables[i].obj_val <<"\" />"<< variables[i].optimized <<"</variable>" << endl;
+    for( int i=0; i<lp.variables.size(); i++ )
+      exp << "<variable name=\""<< lp.variables[i].name <<"\" coefficient=\""<< lp.variables[i].obj_val <<"\" />"<< optimized_values[i] <<"</variable>" << endl;
     
     exp << "</solution>";
     return exp.str();
   }
-
 };
 
 typedef unordered_map<store_item_t, unordered_map<store_item_t, int> > pairwise_vars_t;
-  
+
 struct lp_problem_mapping_t {
   unordered_map<int, int>          n2v;
   unordered_map<int, unordered_map<int, int> >          nn2uv;
@@ -819,6 +824,16 @@ struct factor_t {
     
     return v_factor;
   }
+  
+};
+
+struct explanation_t {
+  lp_solution_t      lpsol;
+  
+  sparse_vector_t    fv;
+  logical_function_t lf;
+
+  inline explanation_t(lp_solution_t &_lpsol) : lpsol(_lpsol) {};
   
 };
 
@@ -994,7 +1009,7 @@ struct proof_graph_t {
     edges[v1].push_back(hv2);
   }
 
-  void printGraph( const linear_programming_problem_t& lpp, const lp_problem_mapping_t &lprel, const string &property = "", ostream* p_out = g_p_out ) const;
+  void printGraph( const lp_solution_t &sol, const linear_programming_problem_t& lpp, const lp_problem_mapping_t &lprel, const string &property = "", ostream* p_out = g_p_out ) const;
   
 };
 
@@ -1210,8 +1225,8 @@ struct external_module_t {
     
   }
 
-  static inline PyObject *asTuple( const pg_node_t &n ) {
-    PyObject *p_pytuple = PyTuple_New(7), *p_pylist = PyList_New(0);
+  static inline PyObject *asTuple(const proof_graph_t &pg, const pg_node_t &n) {
+    PyObject *p_pytuple = PyTuple_New(10), *p_pylist = PyList_New(0);
     PyTuple_SetItem(p_pytuple, 0, PyString_FromString(g_store.claim(n.lit.predicate).c_str()));
     PyTuple_SetItem(p_pytuple, 1, p_pylist);
     PyTuple_SetItem(p_pytuple, 2, PyInt_FromLong(n.n));
@@ -1219,6 +1234,9 @@ struct external_module_t {
     PyTuple_SetItem(p_pytuple, 4, PyString_FromString(join(n.nodes_appeared.begin(), n.nodes_appeared.end(), "%d", ",").c_str()));
     PyTuple_SetItem(p_pytuple, 5, PyFloat_FromDouble(n.lit.wa_number));
     PyTuple_SetItem(p_pytuple, 6, PyInt_FromLong(n.type));
+    PyTuple_SetItem(p_pytuple, 7, PyInt_FromLong(pg.n2hn.count(n.n) > 0 ? pg.n2hn.find(n.n)->second[0] : -1));
+    PyTuple_SetItem(p_pytuple, 8, PyInt_FromLong(n.f_prohibited ? 1 : 0));
+    PyTuple_SetItem(p_pytuple, 9, PyString_FromString(n.lit.extra.c_str()));
     repeat(i, n.lit.terms.size()) PyList_Append(p_pylist, PyString_FromString(g_store.claim(n.lit.terms[i]).c_str()));
     return p_pytuple;
   }
@@ -1246,7 +1264,7 @@ struct external_module_t {
     PyObject *p_pylist = PyList_New(0);
     
     repeat( i, context.p_proof_graph->nodes.size() )
-      PyList_Append( p_pylist, asTuple(context.p_proof_graph->nodes[i]) );
+      PyList_Append(p_pylist, asTuple(*context.p_proof_graph, context.p_proof_graph->nodes[i]));
     
     return p_pylist;
   }
@@ -1262,7 +1280,7 @@ struct external_module_t {
     const vector<int> *p_t2n;
     if( context.p_proof_graph->getNode( &p_t2n, g_store.cashier(p_query) ) ) {
       repeat( i, p_t2n->size() )
-        PyList_Append( p_pylist, asTuple(context.p_proof_graph->nodes[ (*p_t2n)[i] ]) );
+        PyList_Append( p_pylist, asTuple(*context.p_proof_graph, context.p_proof_graph->nodes[ (*p_t2n)[i] ]) );
     }
     
     return p_pylist;
@@ -1402,26 +1420,23 @@ struct loss_t {
 
   inline void setLoss( const training_data_t& td, const logical_function_t& current_y, const lp_problem_mapping_t& lprel, double score ) {
 
-#pragma omp critical (PYTHONCALL)
-    {
-      PyObject *p_pyret = NULL;
-      mypyobject_t::buyTrashCan();
+    PyObject *p_pyret = NULL;
+    mypyobject_t::buyTrashCan();
       
-      external_module_context_t emc = {NULL, &lprel, &ci};
-      mypyobject_t pycon( PyCapsule_New( (void*)&emc, NULL, NULL) );
-      p_pyret = g_ext.call( "cbGetLoss", Py_BuildValue( "Oss", pycon.p_pyobj, current_y.toString().c_str(), td.y_lf.toString().c_str() ) );
+    external_module_context_t emc = {NULL, &lprel, &ci};
+    mypyobject_t pycon( PyCapsule_New( (void*)&emc, NULL, NULL) );
+    p_pyret = g_ext.call( "cbGetLoss", Py_BuildValue( "Oss", pycon.p_pyobj, current_y.toString().c_str(), td.y_lf.toString().c_str() ) );
       
-      this->loss = PyFloat_AsDouble( PyTuple_GetItem( p_pyret, 0) );
+    this->loss = PyFloat_AsDouble( PyTuple_GetItem( p_pyret, 0) );
 
-      PyObject *p_pylist_weighting = PyTuple_GetItem(p_pyret, 1);
-      repeat( i, PyList_Size( p_pylist_weighting ) ) {
-        weighting[ PyInt_AsLong( PyTuple_GetItem( PyList_GetItem( p_pylist_weighting, i ), 0 ) ) ] = PyFloat_AsDouble( PyTuple_GetItem( PyList_GetItem( p_pylist_weighting, i ), 1 ) );
-      }
-        
-      Py_DECREF( p_pyret );
-      
-      mypyobject_t::cleanTrashCan();
+    PyObject *p_pylist_weighting = PyTuple_GetItem(p_pyret, 1);
+    repeat( i, PyList_Size( p_pylist_weighting ) ) {
+      weighting[ PyInt_AsLong( PyTuple_GetItem( PyList_GetItem( p_pylist_weighting, i ), 0 ) ) ] = PyFloat_AsDouble( PyTuple_GetItem( PyList_GetItem( p_pylist_weighting, i ), 1 ) );
     }
+        
+    Py_DECREF( p_pyret );
+      
+    mypyobject_t::cleanTrashCan();
   
   }
 
@@ -1453,25 +1468,19 @@ struct lp_inference_cache_t {
 
   inline lp_inference_cache_t( const inference_configuration_t &ci ) : loss(ci) {};
   
-  inline void getLossDescription( vector<string> *p_out_loss_desc ) const {
-    for( int i=0; i<lprel.v_loss.size(); i++ )
-      if( 1.0 == lp.variables[ lprel.v_loss[i] ].optimized )
-        p_out_loss_desc->push_back( lprel.s_loss[i] );
-  }
-
-  inline void printStatistics( ostream *p_out = g_p_out ) const {
+  inline void printStatistics( const lp_solution_t& lpsol, ostream *p_out = g_p_out ) const {
     (*p_out) << "<statistics>" << endl
-         << "<time total=\""<< (elapsed_prepare+elapsed_ilp) <<"\" prepare=\"" << elapsed_prepare << "\" ilp=\"" << elapsed_ilp << "\" />"<< endl
-         << "<ilp solution=\""<< toString(lp.sol_type) <<"\" variables=\"" << lp.variables.size() << "\" constraints=\"" << lp.constraints.size() << "\" />"<< endl
-         << "<search-space literals=\""<< pg.nodes.size() <<"\" axiom=\""<< pg.instantiated_axioms.size() <<"\" />"<< endl
-         << "</statistics>" << endl;
+             << "<time total=\""<< (elapsed_prepare+elapsed_ilp) <<"\" prepare=\"" << elapsed_prepare << "\" ilp=\"" << elapsed_ilp << "\" />"<< endl
+             << "<ilp solution=\""<< toString(lpsol.sol_type) <<"\" variables=\"" << lp.variables.size() << "\" constraints=\"" << lp.constraints.size() << "\" />"<< endl
+             << "<search-space literals=\""<< pg.nodes.size() <<"\" axiom=\""<< pg.instantiated_axioms.size() <<"\" />"<< endl
+             << "</statistics>" << endl;
   }
   
 };
 
 /* Algorithms. */
 namespace algorithm {
-  inference_result_t infer( logical_function_t *p_out_best_h, sparse_vector_t *p_out_fv, lp_inference_cache_t *p_out_cache, lp_inference_cache_t *p_old_cache, inference_configuration_t& c, const logical_function_t &obs, const string &sexp_obs, const knowledge_base_t& kb, bool f_learning, const weight_vector_t &w, ostream *p_out = g_p_out );
+  inference_result_type_t infer(vector<explanation_t> *p_out_expls, lp_inference_cache_t *p_out_cache, lp_inference_cache_t *p_old_cache, inference_configuration_t& c, const logical_function_t &obs, const string &sexp_obs, const knowledge_base_t& kb, bool f_learning, const weight_vector_t &w, ostream *p_out = g_p_out );
   void learn( score_function_t *p_out_sfunc, const learn_configuration_t &c, vector<training_data_t>& t, const knowledge_base_t& kb );
 }
 
@@ -1483,10 +1492,10 @@ namespace function {
   
   bool convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_mapping_t *p_out_lprel, lp_inference_cache_t *p_out_cache, const knowledge_base_t &kb, const proof_graph_t &gp, const variable_cluster_t &evc, inference_configuration_t &c );
   void adjustLP( linear_programming_problem_t *p_out_lp, lp_problem_mapping_t *p_out_lprel, lp_inference_cache_t *p_out_cache, const knowledge_base_t &kb, const proof_graph_t &gp, const variable_cluster_t &evc, inference_configuration_t &c );
-  ilp_solution_type_t solveLP_BnB( linear_programming_problem_t *p_out_lp, lp_problem_mapping_t *p_out_lprel, const inference_configuration_t &c, lp_inference_cache_t *p_out_cache = NULL );
-  ilp_solution_type_t solveLP_LS( linear_programming_problem_t *p_out_lp, const inference_configuration_t &c, lp_inference_cache_t *p_out_cache = NULL );
+  ilp_solution_type_t solveLP_BnB( vector<lp_solution_t> *p_out_sols, const linear_programming_problem_t &lp, const lp_problem_mapping_t &lprel, const inference_configuration_t &c, lp_inference_cache_t *p_out_cache = NULL );
+  ilp_solution_type_t solveLP_LS( vector<lp_solution_t> *p_out_sols, const linear_programming_problem_t &lp, const lp_problem_mapping_t &lprel, const inference_configuration_t &c, lp_inference_cache_t *p_out_cache = NULL );
   void roundUpLP( linear_programming_problem_t *p_out_lp );
-  void convertLPToHypothesis( logical_function_t *p_out_h, sparse_vector_t *p_out_fv, const lp_inference_cache_t &cache, bool f_vector_weighting = false );
+  void convertLPToHypothesis(logical_function_t *p_out_h, sparse_vector_t *p_out_fv, const lp_solution_t &sol, const lp_inference_cache_t &cache);
   
   void sample( vector<double> *p_out_array, const sampling_method_t m );
 
@@ -1499,13 +1508,11 @@ namespace function {
 
   inline void beginXMLtag( const string &tag, const string &parameters = "", ostream *p_out = g_p_out ) {
     (*p_out) << "<" << tag << ("" != parameters ? (" " + parameters) : "") << ">" << endl;
-#pragma omp critical (XMLTAG_OPR)
     g_xml_stack.push_front( tag );
   }
-
+  
   inline void endXMLtag( const string &tag, ostream *p_out = g_p_out ) {
     (*p_out) << "</" << tag << ">" << endl;
-#pragma omp critical (XMLTAG_OPR)
     g_xml_stack.pop_front();
   }
   
@@ -1531,9 +1538,19 @@ namespace function {
     for( sparse_vector_t::const_iterator iter_sv = p_out->begin(); p_out->end() != iter_sv; ++iter_sv )
       (*p_out)[ iter_sv->first ] *= coe;
   }
+
+  inline void mulVector( weight_vector_t *p_out, double coe ) {
+    for( weight_vector_t::const_iterator iter_sv = p_out->begin(); p_out->end() != iter_sv; ++iter_sv )
+      (*p_out)[ iter_sv->first ] = (*p_out)[ iter_sv->first ] * coe;
+  }
   
   inline void addVector( sparse_vector_t *p_out, const sparse_vector_t &sv ) {
     for( sparse_vector_t::const_iterator iter_sv = sv.begin(); sv.end() != iter_sv; ++iter_sv )
+      (*p_out)[ iter_sv->first ] += iter_sv->second;
+  }
+
+  inline void addVector( weight_vector_t *p_out, const weight_vector_t &sv ) {
+    for( weight_vector_t::const_iterator iter_sv = sv.begin(); sv.end() != iter_sv; ++iter_sv )
       (*p_out)[ iter_sv->first ] += iter_sv->second;
   }
   

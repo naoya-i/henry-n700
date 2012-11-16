@@ -31,7 +31,7 @@ def cbScoreFunction( ctx ):
 		if "!=" == p[0]: continue
 		
 		# CREATE EXPLANATION FACTORS FOR p.
-		dnf_expl = []
+		dnf_expl, expl = [], defaultdict(list)
 
 		for q in set_p:
 			if q[0] in ["=", "!="]: continue
@@ -47,7 +47,7 @@ def cbScoreFunction( ctx ):
 
 			#
 			# EXPLANATION FOR p.
-			if p[0] != q[0] and repr(p[2]) in q[4].split(","): dnf_expl += [(fc_cooc, "", 1)]
+			if p[0] != q[0] and repr(p[2]) in q[4].split(","): expl[q[7]] += ["p%d" % q[2]]
 				
 			#
 			# EXPLANATION BY UNIFICATION.
@@ -64,10 +64,13 @@ def cbScoreFunction( ctx ):
 
 			# CLASSICAL UNIFICATION.
 			if _samePreds() and (p[5] > q[5] or (p[5] == q[5] and p[2] > q[2])):
-				dnf_expl += [(fc_cooc_vuall, "UNIFY_PROPOSITIONS", 1)]
+				dnf_expl += [fc_cooc_vuall]
+
+		# GROUPING BY THE CONJUNCTIONS.
+		dnf_expl += expl.values()
 		
 		# CREATE FEATURE FOR THE DNF.
-		ret += [([disj[0] for disj in dnf_expl], "!EXPLAINED_%s_%s" % (p[0], p[2]), p[5])]
+		ret += [(dnf_expl, "!EXPLAINED_%s_%s" % (p[0], p[2]), p[5])]
 			
 	return ret
 

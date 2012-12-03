@@ -27,6 +27,7 @@
 #include <Python.h>
 
 #define has_key( dict, key ) (dict.end() != dict.find( key ))
+#define get_value( dict, key, def ) (has_key(dict, key) ? dict.find(key)->second : def)
 
 #define PrecompiledAxiomLength 1024
 
@@ -338,7 +339,7 @@ struct literal_t {
   vector<store_item_t> terms;
 
   double               wa_number;
-  string               extra, instantiated_by;
+  string               extra, instantiated_by, theta, instantiated_by_all;
 
   inline literal_t() : wa_number(1) {};
   inline literal_t( const sexp_stack_t &s ) : wa_number(1) {
@@ -832,8 +833,9 @@ struct explanation_t {
   
   sparse_vector_t    fv;
   logical_function_t lf;
+  double             loss;
 
-  inline explanation_t(lp_solution_t &_lpsol) : lpsol(_lpsol) {};
+  inline explanation_t(lp_solution_t &_lpsol) : lpsol(_lpsol), loss(0.0) {};
   
 };
 
@@ -1226,7 +1228,7 @@ struct external_module_t {
   }
 
   static inline PyObject *asTuple(const proof_graph_t &pg, const pg_node_t &n) {
-    PyObject *p_pytuple = PyTuple_New(10), *p_pylist = PyList_New(0);
+    PyObject *p_pytuple = PyTuple_New(12), *p_pylist = PyList_New(0);
     PyTuple_SetItem(p_pytuple, 0, PyString_FromString(g_store.claim(n.lit.predicate).c_str()));
     PyTuple_SetItem(p_pytuple, 1, p_pylist);
     PyTuple_SetItem(p_pytuple, 2, PyInt_FromLong(n.n));
@@ -1237,6 +1239,8 @@ struct external_module_t {
     PyTuple_SetItem(p_pytuple, 7, PyInt_FromLong(pg.n2hn.count(n.n) > 0 ? pg.n2hn.find(n.n)->second[0] : -1));
     PyTuple_SetItem(p_pytuple, 8, PyInt_FromLong(n.f_prohibited ? 1 : 0));
     PyTuple_SetItem(p_pytuple, 9, PyString_FromString(n.lit.extra.c_str()));
+    PyTuple_SetItem(p_pytuple, 10, PyString_FromString(n.lit.instantiated_by_all.c_str()));
+    PyTuple_SetItem(p_pytuple, 11, PyString_FromString(n.lit.theta.c_str()));
     repeat(i, n.lit.terms.size()) PyList_Append(p_pylist, PyString_FromString(g_store.claim(n.lit.terms[i]).c_str()));
     return p_pytuple;
   }
@@ -1482,6 +1486,7 @@ struct lp_inference_cache_t {
 namespace algorithm {
   inference_result_type_t infer(vector<explanation_t> *p_out_expls, lp_inference_cache_t *p_out_cache, lp_inference_cache_t *p_old_cache, inference_configuration_t& c, const logical_function_t &obs, const string &sexp_obs, const knowledge_base_t& kb, bool f_learning, const weight_vector_t &w, ostream *p_out = g_p_out );
   void learn( score_function_t *p_out_sfunc, const learn_configuration_t &c, vector<training_data_t>& t, const knowledge_base_t& kb );
+  void kbestMIRA(weight_vector_t *p_out_new, const weight_vector_t &w_current, const sparse_vector_t &fv_current, const vector<pair<sparse_vector_t, double> > &fv_wrong_best, const learn_configuration_t &c);
 }
 
 /* Functions. */
@@ -1569,11 +1574,25 @@ namespace function {
     return exp.str();
   }
 
+  inline string toString( const weight_vector_t &wv, bool f_colored=false ) {
+    ostringstream exp;
+    for( weight_vector_t::const_iterator iter_sv = wv.begin(); wv.end() != iter_sv; ++iter_sv ) {
+      exp << "\"" << ::toString(f_colored ? "\33[0;34m%s\33[0m" : "%s", iter_sv->first.c_str()) << "\":" << iter_sv->second << " ";
+      if( f_colored ) exp << endl;
+    }
+    return exp.str();
+  }
+  
   inline void getVectorIndices( unordered_set<string> *p_out_indices, const sparse_vector_t &s ) {
     for( sparse_vector_t::const_iterator iter_f = s.begin(); s.end() != iter_f; ++iter_f )
       p_out_indices->insert( iter_f->first );
   }
 
+  inline void getVectorIndices( unordered_set<string> *p_out_indices, const weight_vector_t &s ) {
+    for( weight_vector_t::const_iterator iter_f = s.begin(); s.end() != iter_f; ++iter_f )
+      p_out_indices->insert( iter_f->first );
+  }
+  
   inline bool getMGU( unifier_t *p_out_u, const literal_t &p1, const literal_t &p2 ) {
     if( p1.predicate != p2.predicate ) return false;
     if( p1.terms.size() != p2.terms.size() ) return false;

@@ -440,20 +440,21 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
 
           if( string::npos != c.output_info.find("GAP") && p_out_pg->getNode( &recycles, lit ) ) {
           
-            n_backchained = recycles[0];
+            n_backchained                                           = recycles[0];
             p_out_pg->nodes[n_backchained].parent_node.insert( n_obs );
             p_out_pg->nodes[n_backchained].axiom_used.insert( p_out_pg->nodes[n_obs].axiom_used.begin(), p_out_pg->nodes[n_obs].axiom_used.end() );
             p_out_pg->nodes[n_backchained].axiom_used.insert( axiom_str );
-            p_out_pg->nodes[n_backchained].axiom_name_used = p_out_pg->nodes[n_obs].axiom_name_used;
+            p_out_pg->nodes[n_backchained].axiom_name_used          = p_out_pg->nodes[n_obs].axiom_name_used;
             p_out_pg->nodes[n_backchained].axiom_name_used.insert(-1 != i_name ? (-1 != i_name ? sr.stack.children[i_name]->children[1]->getString() : "?") : "");
             p_out_pg->nodes[n_backchained].nodes_appeared.insert( n_obs );
             p_out_pg->nodes[n_backchained].nodes_appeared.insert(rhs_collections[i].second.begin(), rhs_collections[i].second.end());
-            p_out_pg->nodes[n_backchained].lit.wa_number         *= rhs_cost;
-            p_out_pg->nodes[n_backchained].lit.instantiated_by    = p_out_pg->nodes[n_backchained].instantiated_by.axiom;
+            p_out_pg->nodes[n_backchained].lit.wa_number           *= rhs_cost;
+            p_out_pg->nodes[n_backchained].lit.instantiated_by      = p_out_pg->nodes[n_backchained].instantiated_by.axiom;
+            p_out_pg->nodes[n_backchained].lit.instantiated_by_all  = p_out_pg->nodes[n_obs].lit.instantiated_by_all + "#" + p_out_pg->nodes[n_backchained].instantiated_by.axiom;
             p_out_pg->nodes[n_backchained].rhs.insert(n_obs);
             p_out_pg->nodes[n_backchained].rhs.insert(rhs_collections[i].second.begin(), rhs_collections[i].second.end());          
             p_out_pg->nodes[n_backchained].cond_neqs.insert(p_out_pg->nodes[n_backchained].cond_neqs.end(), cond_neqs.begin(), cond_neqs.end());
-            p_out_pg->nodes[n_backchained].f_prohibited = f_prohibited;;
+            p_out_pg->nodes[n_backchained].f_prohibited             = f_prohibited;;
           
           } else {
 
@@ -462,23 +463,25 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
             /* Set the node parameters. */
             V(5) cerr << TS() << log_head << p_out_pg->nodes[n_backchained].lit.wa_number << "*" << rhs_cost << endl;
             
-            p_out_pg->nodes[n_backchained].depth                  = p_out_pg->nodes[n_obs].depth + 1;
-            p_out_pg->nodes[n_backchained].obs_node               = p_out_pg->nodes[n_obs].obs_node;
+            p_out_pg->nodes[n_backchained].depth                    = p_out_pg->nodes[n_obs].depth + 1;
+            p_out_pg->nodes[n_backchained].obs_node                 = p_out_pg->nodes[n_obs].obs_node;
             p_out_pg->nodes[n_backchained].parent_node.insert( n_obs );
-            p_out_pg->nodes[n_backchained].instantiated_by.axiom  = -1 != i_name ? (-1 != i_name ? sr.stack.children[i_name]->children[1]->getString() : "?") : "";
-            p_out_pg->nodes[n_backchained].instantiated_by.where  = j;
+            p_out_pg->nodes[n_backchained].instantiated_by.axiom    = -1 != i_name ? (-1 != i_name ? sr.stack.children[i_name]->children[1]->getString() : "?") : "";
+            p_out_pg->nodes[n_backchained].instantiated_by.where    = j;
             p_out_pg->nodes[n_backchained].axiom_used.insert( p_out_pg->nodes[n_obs].axiom_used.begin(), p_out_pg->nodes[n_obs].axiom_used.end() );
             p_out_pg->nodes[n_backchained].axiom_used.insert( axiom_str );
-            p_out_pg->nodes[n_backchained].axiom_name_used = p_out_pg->nodes[n_obs].axiom_name_used;
+            p_out_pg->nodes[n_backchained].axiom_name_used          = p_out_pg->nodes[n_obs].axiom_name_used;
             p_out_pg->nodes[n_backchained].axiom_name_used.insert(-1 != i_name ? (-1 != i_name ? sr.stack.children[i_name]->children[1]->getString() : "?") : "");
-            p_out_pg->nodes[n_backchained].nodes_appeared         = p_out_pg->nodes[n_obs].nodes_appeared;
+            p_out_pg->nodes[n_backchained].nodes_appeared           = p_out_pg->nodes[n_obs].nodes_appeared;
             p_out_pg->nodes[n_backchained].nodes_appeared.insert(rhs_collections[i].second.begin(), rhs_collections[i].second.end());
-            p_out_pg->nodes[n_backchained].lit.wa_number         *= rhs_cost;
-            p_out_pg->nodes[n_backchained].lit.instantiated_by    = p_out_pg->nodes[n_backchained].instantiated_by.axiom;
+            p_out_pg->nodes[n_backchained].lit.theta                = theta.toString();
+            p_out_pg->nodes[n_backchained].lit.wa_number           *= rhs_cost;
+            p_out_pg->nodes[n_backchained].lit.instantiated_by      = p_out_pg->nodes[n_backchained].instantiated_by.axiom;
+            p_out_pg->nodes[n_backchained].lit.instantiated_by_all  = p_out_pg->nodes[n_obs].lit.instantiated_by_all + "#" + p_out_pg->nodes[n_backchained].instantiated_by.axiom;
             p_out_pg->nodes[n_backchained].rhs.insert(n_obs);
             p_out_pg->nodes[n_backchained].rhs.insert(rhs_collections[i].second.begin(), rhs_collections[i].second.end());          
             p_out_pg->nodes[n_backchained].cond_neqs.insert(p_out_pg->nodes[n_backchained].cond_neqs.end(), cond_neqs.begin(), cond_neqs.end());
-            p_out_pg->nodes[n_backchained].f_prohibited = f_prohibited;
+            p_out_pg->nodes[n_backchained].f_prohibited             = f_prohibited;
 
             V(5) cerr << TS() << log_head << "new Literal: " << p_out_pg->nodes[n_backchained].lit.toString() << endl;
           
@@ -1017,11 +1020,11 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
   }
 
   /* Make the factors that include variable unification assumptions relative value. */
-  // foreach(unordered_set<int>, iter_vua, vars_unification) {
-  //   foreach(sparse_vector_t, iter_v, p_out_lprel->feature_vector[*iter_vua]) {
-  //     if(0 == iter_v->first.find(PrefixFixedWeight)) continue;
-  //     iter_v->second /= num_pair;
-  //   } }
+  foreach(unordered_set<int>, iter_vua, vars_unification) {
+    foreach(sparse_vector_t, iter_v, p_out_lprel->feature_vector[*iter_vua]) {
+      if(0 == iter_v->first.find(PrefixFixedWeight)) continue;
+      //iter_v->second /= num_pair;
+    } }
 
   if( BnB == c.method || LocalSearch == c.method ) {
     //if(true) {

@@ -153,6 +153,7 @@ inference_result_type_t algorithm::infer(vector<explanation_t> *p_out_expls, lp_
     function::convertLPToHypothesis( &expl.lf, &expl.fv, lpsols[s], *p_out_cache );
     p_out_cache->loss.setLoss(c.training_instance, expl.lf, p_out_cache->lprel, lpsols[s].optimized_obj);
     p_out_cache->loss.minimum_loss = p_out_cache->loss.loss;
+    expl.loss                      = p_out_cache->loss.loss;
 
     (*p_out) << "<observed size=\"" << obs.branches.size() << "\" domain_size=\"" << kb.constants.size() << "\">" << endl << obs.toString(c.isColoring()) << endl << "</observed>" << endl
              << "<hypothesis score=\"" << lpsols[s].optimized_obj << "\">" << endl << expl.lf.toString(c.isColoring()) << endl << "</hypothesis>" << endl
@@ -264,6 +265,7 @@ void algorithm::learn( score_function_t *p_out_sfunc, const learn_configuration_
       cerr << TS() << "fork(): " << child_pid << " from " << getpid() << endl;
       
       repeat( i, t.size() ) {
+        
         if( s != i % c.S ) continue;
         num_actually_trained++;
         
@@ -301,7 +303,7 @@ void algorithm::learn( score_function_t *p_out_sfunc, const learn_configuration_
         ci.objfunc           = LossAugmented;
         ci.sol_cache         = sol_cache[i];
         ci.target_name       = t[i].name;
-        ci.k_best            = 1;
+        ci.k_best            = c.ci.k_best;
 
         inference_result_type_t ret = infer(&expls_current, &cache, NULL, ci, t[i].x, t[i].x_sexp, kb, true, p_out_sfunc->weights, &ss );
         
@@ -335,7 +337,7 @@ void algorithm::learn( score_function_t *p_out_sfunc, const learn_configuration_
 
         total_loss += cache.loss.loss;
         
-        if( 0.0 == cache.loss.loss ) {
+        if( 0.0 == expls_current[0].loss ) {
           cerr << TS() << "No loss!" << endl;
           ss << "<update loss=\"0\" coefficient=\"0\" />" << endl;
           function::endXMLtag( "training", &ss );
@@ -359,7 +361,7 @@ void algorithm::learn( score_function_t *p_out_sfunc, const learn_configuration_
           //ci.use_cache         = true;
           ci.initial_label_index = t[i].x.branches.size();
           ci.target_name         = t[i].name;
-          ci.k_best              = c.ci.k_best;
+          ci.k_best              = 1; 
 
           logical_function_t       x_prime = t[i].x;
       
@@ -381,14 +383,14 @@ void algorithm::learn( score_function_t *p_out_sfunc, const learn_configuration_
           
           total_minimum_loss += another_cache.loss.loss;
 
-          if( cache.loss.loss == another_cache.loss.loss ) {
-            cerr << TS() << "Minimum loss reached." << endl;
-            ss << toString("<update loss=\"%f\" coefficient=\"0\" />", cache.loss.loss) << endl;
-            function::endXMLtag( "hidden-variable-completion", &ss );
-            function::endXMLtag( "training", &ss );
-            (*g_p_out) << ss.str() << endl;
-            num_actually_trained++;
-            continue; }
+          // if( cache.loss.loss == another_cache.loss.loss ) {
+          //   cerr << TS() << "Minimum loss reached." << endl;
+          //   ss << toString("<update loss=\"%f\" coefficient=\"0\" />", cache.loss.loss) << endl;
+          //   function::endXMLtag( "hidden-variable-completion", &ss );
+          //   function::endXMLtag( "training", &ss );
+          //   (*g_p_out) << ss.str() << endl;
+          //   num_actually_trained++;
+          //   continue; }
 
         }
 
@@ -396,95 +398,125 @@ void algorithm::learn( score_function_t *p_out_sfunc, const learn_configuration_
         
         /* Merge them into one vector. */
         vector<weight_vector_t> updated_vectors;
+        vector<pair<sparse_vector_t, double> > wrong_best;
+
+        repeat(k, expls_current.size())
+          wrong_best.push_back(make_pair(expls_current[k].fv, expls_current[k].loss));
+
+        weight_vector_t w_new;
+        algorithm::kbestMIRA(&w_new, p_out_sfunc->weights, expls_correct[0].fv, wrong_best, c);
+
+        /* SHOW SOME STATISTICS. */
+        double       f_vecdiff = 0.0;
+        stringstream ss_content;
         
-        repeat(k, expls_correct.size()) {
-          weight_vector_t weight = p_out_sfunc->weights;
+        function::getVectorIndices(&feature_indices, w_new);
+        function::getVectorIndices(&feature_indices, p_out_sfunc->weights);
+        
+        foreach(unordered_set<string>, iter_fi, feature_indices) {
+          if(0.0 == p_out_sfunc->weights[*iter_fi] - w_new[*iter_fi]) continue;
           
-          v_correct = expls_correct[k].fv;
+          ss_content << toString("<element name=\"%s\">", iter_fi->c_str())
+                     << p_out_sfunc->weights[*iter_fi] << " -> " << w_new[*iter_fi] << "</element>" << endl;
 
-          s_current = score_function_t::getScore(p_out_sfunc->weights, v_current);
-          s_correct = score_function_t::getScore(p_out_sfunc->weights, v_correct);
-          
-          function::getVectorIndices( &feature_indices, v_correct );
-          function::getVectorIndices( &feature_indices, v_current );
-
-          /* TODO: Not updated if it is not good solution. */
-          if(0 == expls_correct.size() || s_current < s_correct) {
-            V(2) cerr << TS() << log_head << toString("Could not find a better completion. (HVC: %f > CURR: %f)", s_correct, s_current) << endl;
-            ss << "<update loss=\""+ toString( "%f", cache.loss.loss ) +"\" coefficient=\"-\" />" << endl; function::endXMLtag( "training", &ss );
-            (*g_p_out) << ss.str() << endl;            
-            continue;
-          }
-        
-          /* II) Update the weights! */
-          double                numerator = 0.0, denominator = 0.0;
-
-          switch( t[i].type_output ) {
-          case Class:     numerator = -t[i].y_cls * cache.loss.loss; break;
-            //case Structure: numerator = s_current - s_correct + cache.loss.loss * (cache.pg.nodes.size() / 10.0);  break;
-          case Structure: numerator = s_current - s_correct + cache.loss.loss;  break;
-          }
-        
-          for( unordered_set<string>::iterator iter_fi = feature_indices.begin(); feature_indices.end() != iter_fi; ++iter_fi ) {
-            string j = *iter_fi;
-            denominator += pow(v_correct[j] - v_current[j], 2);
-          }
-
-          double tau, TauTolerance = c.E * 0.1;
-
-          if(TauTolerance > fabs(numerator))   numerator = numerator >= 0 ? TauTolerance : -TauTolerance;
-
-          ss << toString("<update-coefficient numerator=\"%f\" denominator=\"%f\" />", numerator, denominator) << endl;
-        
-          if(0.0 == denominator) tau = 0.0;
-          else                   tau = min( c.C, numerator / denominator );
-
-          function::beginXMLtag( "feature-vector-diff", "", &ss );
-
-          foreach( unordered_set<string>, iter_fi, feature_indices )
-            ss << " <element name=\""<< *iter_fi <<"\" log=\""<< (v_current[*iter_fi] != v_correct[*iter_fi] ? ::toString( "*%d ", 1+num_diff[*iter_fi]++ ) : "") << "\" diff=\"" << v_correct[*iter_fi] - v_current[*iter_fi] << "\">"
-               << v_current[*iter_fi] << " -> " << v_correct[*iter_fi] << "</element>" << endl;
-        
-          function::endXMLtag( "feature-vector-diff", &ss );      
-      
-          function::beginXMLtag( "update", toString("loss=\"%f\" coefficient=\"%f\" vector-diff=\"%f\">", cache.loss.loss, tau, denominator), &ss );
-      
-          function::beginXMLtag( "loss", "", &ss );
-          ss << cache.loss.printVW() << endl;
-          function::endXMLtag( "loss", &ss );
-
-          total_updates += fabs(tau);
-
-          function::beginXMLtag( "weight-vector", "", &ss );
-          for( unordered_set<string>::iterator iter_fi = feature_indices.begin(); feature_indices.end() != iter_fi; ++iter_fi ) {
-            string j = *iter_fi;
-            if(0 == j.find(PrefixInvisibleElement) || 0 == j.find(PrefixFixedWeight)) continue; /* Fixed weight. */
-            if(0 != v_correct[j] - v_current[j]) {
-              ss << toString("<element name=\"%s\">%f -> %f</element>", j.c_str(), p_out_sfunc->weights[j], p_out_sfunc->weights[j] + tau * (v_correct[j] - v_current[j])) << endl;
-              weight[j] += tau * (v_correct[j] - v_current[j]);
-            }
-          }
-          function::endXMLtag( "weight-vector", &ss );
-        
-          /* Check-sum. */
-          double s_new_current = 0.0, s_new_correct = 0.0;
-        
-          for( weight_vector_t::iterator iter_fi = p_out_sfunc->weights.begin(); p_out_sfunc->weights.end() != iter_fi; ++iter_fi ) {
-            s_new_current += iter_fi->second * v_current[iter_fi->first];
-            s_new_correct += iter_fi->second * v_correct[iter_fi->first];
-          }
-
-          ss << toString("<check-sum old-current=\"%f\" new-current=\"%f\" old-correct=\"%f\" new-correct=\"%f\" diff=\"%f\" />", s_current, s_new_current, s_correct, s_new_correct, s_new_correct - s_new_current) << endl;
-
-          updated_vectors.push_back(weight);
+          f_vecdiff += (w_new[*iter_fi] - p_out_sfunc->weights[*iter_fi])*(w_new[*iter_fi] - p_out_sfunc->weights[*iter_fi]);
         }
-
-        p_out_sfunc->weights = weight_vector_t();
         
-        repeat(k, updated_vectors.size())
-          function::addVector(&p_out_sfunc->weights, updated_vectors[k]);
+        function::beginXMLtag("update", toString("loss=\"%f\" vector-diff=\"%f\"", expls_current[0].loss, sqrtf(f_vecdiff)), &ss);
+        ss << ss_content.str();
+        function::endXMLtag("update", &ss);
 
-        function::mulVector(&p_out_sfunc->weights, 1.0/updated_vectors.size());
+        total_updates += f_vecdiff;
+        p_out_sfunc->weights = w_new;
+        
+        // repeat(k, expls_correct.size()) {
+        //   weight_vector_t weight = p_out_sfunc->weights;
+          
+        //   v_correct = expls_correct[k].fv;
+
+        //   s_current = score_function_t::getScore(p_out_sfunc->weights, v_current);
+        //   s_correct = score_function_t::getScore(p_out_sfunc->weights, v_correct);
+          
+        //   function::getVectorIndices( &feature_indices, v_correct );
+        //   function::getVectorIndices( &feature_indices, v_current );
+
+        //   /* TODO: Not updated if it is not good solution. */
+        //   if(0 == expls_correct.size() || s_current < s_correct) {
+        //     V(2) cerr << TS() << log_head << toString("Could not find a better completion. (HVC: %f > CURR: %f)", s_correct, s_current) << endl;
+        //     ss << "<update loss=\""+ toString( "%f", cache.loss.loss ) +"\" coefficient=\"-\" />" << endl; function::endXMLtag( "training", &ss );
+        //     (*g_p_out) << ss.str() << endl;            
+        //     continue;
+        //   }
+        
+        //   /* II) Update the weights! */
+        //   double                numerator = 0.0, denominator = 0.0;
+
+        //   switch( t[i].type_output ) {
+        //   case Class:     numerator = -t[i].y_cls * cache.loss.loss; break;
+        //     //case Structure: numerator = s_current - s_correct + cache.loss.loss * (cache.pg.nodes.size() / 10.0);  break;
+        //   case Structure: numerator = s_current - s_correct + cache.loss.loss;  break;
+        //   }
+        
+        //   for( unordered_set<string>::iterator iter_fi = feature_indices.begin(); feature_indices.end() != iter_fi; ++iter_fi ) {
+        //     string j = *iter_fi;
+        //     denominator += pow(v_correct[j] - v_current[j], 2);
+        //   }
+
+        //   double tau, TauTolerance = c.E * 0.1;
+
+        //   if(TauTolerance > fabs(numerator))   numerator = numerator >= 0 ? TauTolerance : -TauTolerance;
+
+        //   ss << toString("<update-coefficient numerator=\"%f\" denominator=\"%f\" />", numerator, denominator) << endl;
+        
+        //   if(0.0 == denominator) tau = 0.0;
+        //   else                   tau = min( c.C, numerator / denominator );
+
+        //   function::beginXMLtag( "feature-vector-diff", "", &ss );
+
+        //   foreach( unordered_set<string>, iter_fi, feature_indices )
+        //     ss << " <element name=\""<< *iter_fi <<"\" log=\""<< (v_current[*iter_fi] != v_correct[*iter_fi] ? ::toString( "*%d ", 1+num_diff[*iter_fi]++ ) : "") << "\" diff=\"" << v_correct[*iter_fi] - v_current[*iter_fi] << "\">"
+        //        << v_current[*iter_fi] << " -> " << v_correct[*iter_fi] << "</element>" << endl;
+        
+        //   function::endXMLtag( "feature-vector-diff", &ss );      
+      
+        //   function::beginXMLtag( "update", toString("loss=\"%f\" coefficient=\"%f\" vector-diff=\"%f\">", cache.loss.loss, tau, denominator), &ss );
+      
+        //   function::beginXMLtag( "loss", "", &ss );
+        //   ss << cache.loss.printVW() << endl;
+        //   function::endXMLtag( "loss", &ss );
+
+        //   total_updates += fabs(tau);
+
+        //   function::beginXMLtag( "weight-vector", "", &ss );
+        //   for( unordered_set<string>::iterator iter_fi = feature_indices.begin(); feature_indices.end() != iter_fi; ++iter_fi ) {
+        //     string j = *iter_fi;
+        //     if(0 == j.find(PrefixInvisibleElement) || 0 == j.find(PrefixFixedWeight)) continue; /* Fixed weight. */
+        //     if(0 != v_correct[j] - v_current[j]) {
+        //       ss << toString("<element name=\"%s\">%f -> %f</element>", j.c_str(), p_out_sfunc->weights[j], p_out_sfunc->weights[j] + tau * (v_correct[j] - v_current[j])) << endl;
+        //       weight[j] += tau * (v_correct[j] - v_current[j]);
+        //     }
+        //   }
+        //   function::endXMLtag( "weight-vector", &ss );
+        
+        //   /* Check-sum. */
+        //   double s_new_current = 0.0, s_new_correct = 0.0;
+        
+        //   for( weight_vector_t::iterator iter_fi = p_out_sfunc->weights.begin(); p_out_sfunc->weights.end() != iter_fi; ++iter_fi ) {
+        //     s_new_current += iter_fi->second * v_current[iter_fi->first];
+        //     s_new_correct += iter_fi->second * v_correct[iter_fi->first];
+        //   }
+
+        //   ss << toString("<check-sum old-current=\"%f\" new-current=\"%f\" old-correct=\"%f\" new-correct=\"%f\" diff=\"%f\" />", s_current, s_new_current, s_correct, s_new_correct, s_new_correct - s_new_current) << endl;
+
+        //   updated_vectors.push_back(weight);
+        // }
+
+        // p_out_sfunc->weights = weight_vector_t();
+        
+        // repeat(k, updated_vectors.size())
+        //   function::addVector(&p_out_sfunc->weights, updated_vectors[k]);
+
+        // function::mulVector(&p_out_sfunc->weights, 1.0/updated_vectors.size());
         
         
         // function::beginXMLtag( "model", "", &ss );
@@ -497,8 +529,8 @@ void algorithm::learn( score_function_t *p_out_sfunc, const learn_configuration_
         // ss << ")" << endl;
 
         // function::endXMLtag( "model", &ss );
-
-        function::endXMLtag( "update", &ss );
+        
+        //function::endXMLtag( "update", &ss );
         function::endXMLtag( "training", &ss );
 
         (*g_p_out) << ss.str() << endl;
@@ -518,17 +550,18 @@ void algorithm::learn( score_function_t *p_out_sfunc, const learn_configuration_
 
       /* HEADERS. */
       ofs << num_actually_trained << "\t" << total_loss << "\t" << total_updates << endl;
-
+      
       /* WEIGHT VECTOR. */
-      for( weight_vector_t::iterator iter_fi = p_out_sfunc->weights.begin(); p_out_sfunc->weights.end() != iter_fi; ++iter_fi ) {
-        if( 0.0 != iter_fi->second ) ofs << iter_fi->first << "\t" << iter_fi->second << endl;
+      for(weight_vector_t::iterator iter_fi = p_out_sfunc->weights.begin(); p_out_sfunc->weights.end() != iter_fi; ++iter_fi) {
+        if( 0.0 != iter_fi->second )
+          ofs << iter_fi->first << "\t" << iter_fi->second << endl;
       }
 
       ofs << "_END_\t0.0" << endl;
 
       /* GAVE_UP_IN_GENERATION. */
-      for( unordered_map<string,int>::iterator iter_gug=gave_up_in_generation.begin(); gave_up_in_generation.end()!=iter_gug; ++iter_gug)
-        if( 1 == iter_gug->second ) ofs << iter_gug->first << endl;
+      for(unordered_map<string,int>::iterator iter_gug=gave_up_in_generation.begin(); gave_up_in_generation.end()!=iter_gug; ++iter_gug)
+        if(1 == iter_gug->second) ofs << iter_gug->first << endl;
       
       ofs.close();
       g_ext.finalize();
@@ -552,7 +585,7 @@ void algorithm::learn( score_function_t *p_out_sfunc, const learn_configuration_
       num_actually_trained += local_num_trained;
       total_loss           += local_loss;
       total_updates        += local_updates;
-        
+
       while( ifs >> name >> value && "_END_" != name )
         weights[ name ] = value;
 
@@ -593,7 +626,8 @@ void algorithm::learn( score_function_t *p_out_sfunc, const learn_configuration_
     
     function::endXMLtag( "learn-process" );
     
-    if( 0.0 == total_updates || total_minimum_loss == total_loss ) {
+    //if( 0.0 == total_updates || total_minimum_loss == total_loss ) {
+    if( total_minimum_loss == total_loss ) {
       cerr << TS() << "# ... Ok, that's enough. "
            << "Henry terminated the training procedure in " << 1+n << "-th iteration." << endl;
       break;

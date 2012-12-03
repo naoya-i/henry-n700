@@ -9,7 +9,7 @@ n_lfc = 0
 
 def main():
 	parser = argparse.ArgumentParser( description="Inference visualization script for Henry-N700." )
-	parser.add_argument( "--graph", help="ID of the graph that you want to visualize.", nargs=1 )
+	parser.add_argument( "--graph", help="ID of the graph that you want to visualize.", nargs="+" )
 	parser.add_argument( "--potential", help="Show all the path including potentials.", action="store_true", default=False )
 	parser.add_argument( "--path", help="Path to henry output.", default="/" )
 	parser.add_argument( "--format", help="Format (dot, or html).", default="dot" )
@@ -18,25 +18,32 @@ def main():
 	pa = parser.parse_args()
 
 	global n_lfc
+
+	print "digraph {"
+	print "graph [rankdir=LR];"
 	
 	for f in pa.input:
 		t			= etree.parse( open(f) if "-" != f else sys.stdin )
 		n_lfc = 0
-		query = "%shenry-output/result-inference/proofgraph" % pa.path
 
-		if None != pa.graph:
-			query = "%shenry-output/learn-process/training/*/proofgraph[@id=\"%s\"]" % (pa.path, "|".join( pa.graph ))
-
-			if 0 == len( t.xpath( query ) ):
-				query = "%shenry-output/result-inference[@target=\"%s\"]/proofgraph" % (pa.path, "|".join( pa.graph ))
-
-		if 0 == len(t.xpath(query)):
-			print >>sys.stderr, "No proof graph found. Did you produce the input file with \"-O proofgraph\" option?"
+		for g in pa.graph:
+			query = "%shenry-output/result-inference/proofgraph" % pa.path
 			
-		for pg in t.xpath(query):
-			if "dot" == pa.format:    _outputDot(t, pg, pa)
-			elif "html" == pa.format: _outputHtml(t, pg)
+			if None != g:
+				query = "%shenry-output/learn-process/training/*/proofgraph[@id=\"%s\"]" % (pa.path, g)
 
+				if 0 == len( t.xpath( query ) ):
+					query = "%shenry-output/result-inference[@target=\"%s\"]/proofgraph" % (pa.path, g)
+
+			if 0 == len(t.xpath(query)):
+				print >>sys.stderr, "No proof graph found. Did you produce the input file with \"-O proofgraph\" option?"
+
+			for pg in t.xpath(query):
+				if "dot" == pa.format:    _outputDot(t, pg, pa)
+				elif "html" == pa.format: _outputHtml(t, pg)
+
+	print "}"
+		
 
 def _outputHtml(t, pg):
 
@@ -176,22 +183,28 @@ function _annotateFactor(x, n) {
 		
 	print "<br /><br /><br /></body></html>"
 
-	
+
+dig_id = 0
+
 def _outputDot(t, pg, pa):
-	print "digraph {"
+	global dig_id
+	
+	print "subgraph {"
 	obs_nodes = []
 	other_nodes = []
 	is_explained = {}
 
 	global n_lfc
 
+	dig_id += 1
+
 	for lit in pg.xpath( "./literal" ):
 
 		if not pa.potential and "yes" != lit.attrib["active"]: continue
 
 		nstr = "n%s [shape=\"none\", label=\"%s\", fontcolor=\"%s\"]" % (
-			lit.attrib["id"], re.sub("!=\((.*?),(.*?)\)", r"\1 != \2", lit.text),
-			"#000000" if "yes" == lit.attrib["active"] else "#cccccc" )
+			dig_id*1000+int(lit.attrib["id"]), re.sub("!=\((.*?),(.*?)\)", r"\1 != \2", lit.text),
+			("#000000" if "yes" == lit.attrib["active"] else "#cccccc") if "4" != lit.attrib[ "type" ] else "#0000cc" )
 
 		if "2" == lit.attrib[ "type" ]: obs_nodes += [nstr]
 		if "3" == lit.attrib[ "type" ]: other_nodes += [nstr]
@@ -211,14 +224,14 @@ def _outputDot(t, pg, pa):
 			if len( lhs ) > 1:
 				n_lfc += 1
 				print "lfc%d [label=\"^\", style=\"%s\"]" % (n_lfc, line_style)
-				print "lfc%d -> n%s [style=\"%s\"]" % (n_lfc, explainee, line_style)
+				print "lfc%d -> n%s [style=\"%s\"]" % (n_lfc, dig_id*1000+int(explainee), line_style)
 
 			for explainer in lhs:
 				explainer = explainer.strip()
 				if len( lhs ) > 1:
-					print "n%s -> lfc%d [label=\"%s\", style=\"%s\"]" % (explainer, n_lfc, expl.attrib["name"], line_style)
+					print "n%s -> lfc%d [label=\"%s\", style=\"%s\"]" % (dig_id*1000+int(explainer), n_lfc, expl.attrib["name"], line_style)
 				else:
-					print "n%s -> n%s [label=\"%s\", style=\"%s\"]" % (explainer, explainee, expl.attrib["name"], line_style)
+					print "n%s -> n%s [label=\"%s\", style=\"%s\"]" % (dig_id*1000+int(explainer), dig_id*1000+int(explainee), expl.attrib["name"], line_style)
 
 	u_log = {}
 
@@ -229,7 +242,7 @@ def _outputDot(t, pg, pa):
 		if not pa.potential and "yes" != unif.attrib["active"]: continue
 
 		print "n%s -> n%s [dir=\"none\", label=\"%s\", style=\"dotted\", fontcolor=\"%s\" color=\"%s\"]" % (
-			unif.attrib["l1"], unif.attrib["l2"], unif.attrib["unifier"],
+			dig_id*1000+int(unif.attrib["l1"]), dig_id*1000+int(unif.attrib["l2"]), unif.attrib["unifier"],
 			"#000000" if "yes" == unif.attrib["active"] else "#999999", "#bb0000" if "yes" == unif.attrib["active"] else "#bb6666")
 
 	def coloring( nodes ):
@@ -238,12 +251,12 @@ def _outputDot(t, pg, pa):
 	def coloringExpl( nodes, f_exp ):
 		return [n if is_explained.has_key( n.split( " " )[0][1:] ) else n.replace( "#000000", "#bb0000" ) for n in nodes if f_exp == is_explained.has_key( n.split( " " )[0][1:] )]
 
-	print "subgraph cluster_o {"
-	print "subgraph cluster_o1 {"
+	print "subgraph cluster_o%d {" % int(dig_id*1000)
+	print "subgraph cluster_o1%d {" % int(dig_id*1000)
 	print "\n".join( coloringExpl( obs_nodes, False ) ).encode('utf-8')
 	print "}"
 
-	print "subgraph cluster_o2 {"
+	print "subgraph cluster_o2%d {" % int(dig_id*1000)
 	print "\n".join( coloringExpl( obs_nodes, True ) ).encode('utf-8')
 	print "}"
 	print "}"

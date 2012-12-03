@@ -5,6 +5,7 @@ import sys, os, re
 parser = argparse.ArgumentParser("")
 parser.add_argument("--input", help="The log file (stdout).", type=file)
 parser.add_argument("--test", help="The parameter given to Henry.")
+parser.add_argument("--whenfinished", help="The parameter given to Henry.")
 
 pa = parser.parse_args()
 
@@ -21,11 +22,14 @@ for ln in pa.input:
 	round += 1
 	
 	print >>open("lc.weights", "w"), ln.strip()
-	os.system(pa.test.replace("WEIGHT_FILE", "lc.weights") + "> lc.stdout 2> lc.stderr")
+	os.system(pa.test.replace("WEIGHT_FILE", "lc.weights").replace("LOOP", str(round)) + "> lc.stdout 2> lc.stderr")
 	os.system("rm lc.weights")
 
-	losses = re.findall("loss=\"([0-9.e-]+)\"", open("lc.stdout").read())
+	losses	 = re.findall("loss=\"([0-9.e-]+)\"", open("lc.stdout").read())
+	avg_loss = sum([float(x) for x in losses]) / len(losses)
 
-	print round, sum([float(x) for x in losses]) / len(losses)
+	os.system(pa.whenfinished.replace("LOOP", str(round)).replace("AVGLOSS", "%.2f" % avg_loss))
+	
+	print round, avg_loss
 	print >>sys.stderr, ", ".join(losses), len(losses)
 	sys.stdout.flush()

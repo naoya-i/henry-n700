@@ -160,6 +160,54 @@ inline int _getCorefVar( store_item_t t1, store_item_t t2, const lp_problem_mapp
   return k1->second.end() == k2 ? -1 : k2->second;
 }
 
+void algorithm::kbestMIRA(weight_vector_t *p_out_new, const weight_vector_t &w_current, const sparse_vector_t &fv_gold, const vector<pair<sparse_vector_t, double> > &wrong_best, const learn_configuration_t &c) {
+  GRBEnv   env;
+  GRBModel model(env);
+  
+  /* Create the objective function. */
+  unordered_set<string> feature_elements;
+  function::getVectorIndices(&feature_elements, w_current);
+  function::getVectorIndices(&feature_elements, fv_gold);
+
+  repeat(i, wrong_best.size())
+    function::getVectorIndices(&feature_elements, wrong_best[i].first);
+  
+  GRBQuadExpr                  expr_obj;
+  unordered_map<string,GRBVar> new_weights;
+  GRBVar                       var_epsilon = model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS);
+  
+  foreach(unordered_set<string>, iter_fe, feature_elements) {
+    new_weights[*iter_fe] = model.addVar(-GRB_INFINITY, GRB_INFINITY, 0.0, GRB_CONTINUOUS);
+    expr_obj += new_weights[*iter_fe]*new_weights[*iter_fe];
+    expr_obj += -2.0 * new_weights[*iter_fe] * get_value(w_current, *iter_fe, 0.0);
+  }
+
+  expr_obj += c.C * var_epsilon;
+
+  GRBEXECUTE(model.update());
+  GRBEXECUTE(model.setObjective(expr_obj));
+
+  /* Create the constraints. */
+  repeat(i, wrong_best.size()) {
+    GRBLinExpr expr_lhs;
+    
+    foreach(unordered_set<string>, iter_fe, feature_elements)
+      expr_lhs += new_weights[*iter_fe]*get_value(fv_gold, *iter_fe, 0.0) - new_weights[*iter_fe]*get_value(wrong_best[i].first, *iter_fe, 0.0);
+    
+    GRBEXECUTE(model.addConstr(expr_lhs >= wrong_best[i].second - var_epsilon));
+  }
+
+  foreachc(weight_vector_t, iter_wv, w_current)
+    if(0 == iter_wv->first.find(PrefixFixedWeight)) GRBEXECUTE(model.addConstr(new_weights[iter_wv->first] == (double)iter_wv->second));
+  
+  GRBEXECUTE(model.set( GRB_IntAttr_ModelSense, GRB_MINIMIZE));
+  GRBEXECUTE(model.optimize());
+
+  foreach(unordered_set<string>, iter_fe, feature_elements)
+    GRBEXECUTE((*p_out_new)[*iter_fe] = new_weights[*iter_fe].get(GRB_DoubleAttr_X));
+  
+}
+
 ilp_solution_type_t function::solveLP_BnB(vector<lp_solution_t> *p_out_sols, const linear_programming_problem_t &lp, const lp_problem_mapping_t &lprel, const inference_configuration_t &c, lp_inference_cache_t *p_out_cache ) {
 
   GRBEnv            env;
@@ -268,15 +316,35 @@ ilp_solution_type_t function::solveLP_BnB(vector<lp_solution_t> *p_out_sols, con
         signal( SIGINT, _cb_stop_ilp );
         GRBEXECUTE( model.optimize() );
         signal( SIGINT, catch_int );
-      
-        if( GRB_TIME_LIMIT == model.get(GRB_IntAttr_Status) ) { cerr << TS() << "CPI: I=" << n << ": Timeout." << endl; break; }
-        else if( GRB_CUTOFF == model.get(GRB_IntAttr_Status) )     { cerr << TS() << "CPI: I=" << n << ": Cutoff." << endl; break; }
+
+        if( GRB_CUTOFF == model.get(GRB_IntAttr_Status) )     { cerr << TS() << "CPI: I=" << n << ": Cutoff." << endl; break; }
         else if( GRB_INFEASIBLE == model.get(GRB_IntAttr_Status) ) { cerr << TS() << "CPI: I=" << n << ": Infeasible." << endl; f_got_solution = false; break; }
-        else if( GRB_OPTIMAL != model.get(GRB_IntAttr_Status) ) {cerr << TS() << "CPI: I=" << n << ": ?" << endl; f_got_solution = false; break; }
-
+        
         /* Any constraints violated? */
-        int                        num_constraints_locally_added = 0;
+        int                num_constraints_locally_added = 0;
+        vector<GRBLinExpr> violated_constraints;
+        vector<GRBVar>     penalizing_vars;
 
+        /* GET THE VARIABLES. */
+        GRBVar *p_vars      = NULL;
+        double *p_vals_vars = NULL;
+          
+        if(0 != model.get(GRB_IntAttr_SolCount)) {
+          p_vars      = model.getVars();
+          p_vals_vars = model.get(GRB_DoubleAttr_X, p_vars, lp.variables.size());
+
+          repeat( j, lp.variables.size() )
+            sol.optimized_values[j] = p_vals_vars[j];
+
+          sol.sol_type      = SubOptimal;
+          sol.optimized_obj = model.get(GRB_DoubleAttr_ObjVal);
+        
+          f_got_solution = true;
+        }
+        
+        if( GRB_TIME_LIMIT == model.get(GRB_IntAttr_Status) ) { cerr << TS() << "CPI: I=" << n << ": Timeout." << endl; break; }
+        else if( GRB_OPTIMAL != model.get(GRB_IntAttr_Status) ) {cerr << TS() << "CPI: I=" << n << ": ?" << endl; f_got_solution = false; break; }
+        
         for( variable_cluster_t::cluster_t::iterator iter_c2v=p_out_cache->evc.clusters.begin(); p_out_cache->evc.clusters.end()!=iter_c2v; ++iter_c2v ) {
           vector<store_item_t> variables( iter_c2v->second.begin(), iter_c2v->second.end() );
       
@@ -296,14 +364,24 @@ ilp_solution_type_t function::solveLP_BnB(vector<lp_solution_t> *p_out_sols, con
                 int    v_ij = _getCorefVar(t1, t2, lprel), v_ik = _getCorefVar(t1, *iter_tu, lprel), v_jk = _getCorefVar(t2, *iter_tu, lprel);
                 if(-1 == v_ij || -1 == v_ik || -1 == v_jk) continue;
             
-                double s_ij = var_map[v_ij].get(GRB_DoubleAttr_X), s_ik = var_map[v_ik].get(GRB_DoubleAttr_X), s_jk = var_map[v_jk].get(GRB_DoubleAttr_X);
+                double s_ij = p_vals_vars[v_ij], s_ik = p_vals_vars[v_ik], s_jk = p_vals_vars[v_jk];
 
-                if( -s_ij - s_jk + s_ik < -1 ) { model.addConstr( -var_map[v_ij] - var_map[v_jk] + var_map[v_ik] >= -1 ); num_constraints_locally_added++; }
-                if( -s_ij + s_jk - s_ik < -1 ) { model.addConstr( -var_map[v_ij] + var_map[v_jk] - var_map[v_ik] >= -1 ); num_constraints_locally_added++; }
-                if(  s_ij - s_jk - s_ik < -1 ) { model.addConstr(  var_map[v_ij] - var_map[v_jk] - var_map[v_ik] >= -1 ); num_constraints_locally_added++; }
+                if( -s_ij - s_jk + s_ik < -1 ) { GRBEXECUTE(penalizing_vars.push_back(model.addVar(0, 1, -100, GRB_BINARY))); violated_constraints.push_back(var_map[v_ij] + var_map[v_jk] - var_map[v_ik]); num_constraints_locally_added++; }
+                if( -s_ij + s_jk - s_ik < -1 ) { GRBEXECUTE(penalizing_vars.push_back(model.addVar(0, 1, -100, GRB_BINARY))); violated_constraints.push_back(var_map[v_ij] - var_map[v_jk] + var_map[v_ik]); num_constraints_locally_added++; }
+                if(  s_ij - s_jk - s_ik < -1 ) { GRBEXECUTE(penalizing_vars.push_back(model.addVar(0, 1, -100, GRB_BINARY))); violated_constraints.push_back(-var_map[v_ij] + var_map[v_jk] + var_map[v_ik]); num_constraints_locally_added++; }
               }
             
             } }
+        }
+
+        if(NULL != p_vars ) delete[] p_vars;
+        if(NULL != p_vals_vars) delete[] p_vals_vars;
+        
+        GRBEXECUTE(model.update());
+                
+        /* VIOLATED CONSTRAINTS ARE PENALIZED. */
+        repeat(i, violated_constraints.size()) {
+          GRBEXECUTE(model.addRange(violated_constraints[i] - penalizing_vars[i], -1, 1));
         }
       
         // foreachc( pairwise_vars_t, iter_t1, p_out_lprel->pp2v )
@@ -334,18 +412,11 @@ ilp_solution_type_t function::solveLP_BnB(vector<lp_solution_t> *p_out_sols, con
 
         num_constraints_added += num_constraints_locally_added;
       
-        cerr << TS() << "CPI: I=" << n << ": Finished. Obj:"<< model.get(GRB_DoubleAttr_ObjVal) <<": Violated:" << num_constraints_locally_added << " (Total: " << num_constraints_added << ")" << endl;
-
-        f_got_solution = true;
+        cerr << TS() << "CPI: I=" << n << ": Finished. Obj:"<< sol.optimized_obj <<": Violated:" << num_constraints_locally_added << " (Total: " << num_constraints_added << ")" << endl;
       
-        repeat( j, lp.variables.size() )
-          sol.optimized_values[j] = var_map[j].get(GRB_DoubleAttr_X);
-
-        sol.optimized_obj = model.get(GRB_DoubleAttr_ObjVal);
+        if( 0 == num_constraints_locally_added ) { cerr << TS() << "CPI: I=" << n << ": No violation." << endl; sol.sol_type = Optimal; break; }
       
-        if( 0 == num_constraints_locally_added ) { cerr << TS() << "CPI: I=" << n << ": No violation." << endl; break; }
-      
-        model.reset();
+        //model.reset();
       
         continue;
       

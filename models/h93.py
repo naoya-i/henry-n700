@@ -37,25 +37,24 @@ def cbScoreFunction( ctx ):
 			if q[0] in ["=", "!="]: continue
 			if p[2] == q[2]:        continue
 
-			if "" != p[4] and "" != q[4]:
-
-				# SELF-EXPLANATION IS PROHIBITED. (p => q => p)
-				if repr(q[2]) in p[4].split(","): continue
-				
 			fc_cooc				 = ["p%d" % p[2], "p%d" % q[2]]
 			fc_cooc_vuall  = fc_cooc + (["c%s %s" % (p[1][i], q[1][i]) for i in xrange(len(p[1]))] if len(p[1]) == len(q[1]) else [])
 
 			#
 			# EXPLANATION FOR p.
-			if p[0] != q[0] and repr(p[2]) in q[4].split(","): expl[q[7]] += ["p%d" % q[2]]
+			if p[0] != q[0] and repr(p[2]) in q[4].split(","):
+				
+				# SELF-EXPLANATION IS PROHIBITED. (p => q => p)
+				if repr(q[2]) in p[4].split(","): continue
+
+				expl[q[7]] += ["p%d" % q[2]]
 				
 			#
 			# EXPLANATION BY UNIFICATION.
-			# if "" != p[4] and "" != q[4]:
+			#if "" != p[4] and "" != q[4]:
 
-			# 	# IF THEY ARE EXPLAINING THE SAME THING, JUST IGNORE THEM. (p => q, p => q)
-			# 	if 0 < len(set(p[4].split(",")) & set(q[4].split(","))): continue
-
+				# IF THEY ARE EXPLAINING THE SAME THING, JUST IGNORE THEM. (p => q, p => q)
+				#if 0 < len(set(p[4].split(",")) & set(q[4].split(","))): continue
 
 			#
 			# BELOW ARE EXPLANATION BY UNIFICATION; AVOID DOUBLE-COUNT.			

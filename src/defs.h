@@ -1,7 +1,7 @@
 #pragma once
 
 #define USE_GUROBI
-#define USE_LOCALSOLVER
+//#define USE_LOCALSOLVER
 
 #include <sqlite3.h>
 

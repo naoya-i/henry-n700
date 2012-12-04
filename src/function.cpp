@@ -180,21 +180,46 @@ bool function::enumeratePotentialElementalHypotheses( proof_graph_t *p_out_pg, v
   // }
 
   /* Reasoning on abduced propositions. */
-  int n_start = 0;
+  uint_t n_start = 0;
   
-  repeat( d, c.depthlimit ) {    
-    repeatf( i, 0, p_out_pg->nodes.size() ) {
-      if( c.isTimeout() ) return false;
-      if( LabelNode == p_out_pg->nodes[i].type ) continue;
-      if( "" != p_out_pg->nodes[i].lit.extra && 0 == p_out_pg->nodes[i].lit.wa_number ) continue;
-      if( !instantiateBackwardChainings( p_out_pg, p_out_evc, i, kb, c ) ) return false;
+  repeat( d, c.depthlimit ) {
+    uint_t current_node_size = p_out_pg->nodes.size();
+    repeatf(i, n_start, current_node_size) {
+      if(c.isTimeout()) return false;
+      if(LabelNode == p_out_pg->nodes[i].type) continue;
+      if(p_out_pg->nodes[i].f_removed) continue;
+      if("" != p_out_pg->nodes[i].lit.extra && 0 == p_out_pg->nodes[i].lit.wa_number) continue;
+      if(!instantiateBackwardChainings( p_out_pg, p_out_evc, i, kb, c )) return false;
     }
 
     if(n_start == p_out_pg->nodes.size()) { cerr << TS() << "d=" << (1+d) << ": no axioms were applied." << endl; break; }
     
     cerr << TS() << "d=" << (1+d) << ": "<< (p_out_pg->nodes.size() - n_start) <<" axioms were applied." << endl;
+
+
+    if(string::npos != c.output_info.find("densodemo")) {
+      /* -- START EXAMPLE */
+      for(uint_t j=n_start; j<p_out_pg->nodes.size(); j++) {
+        cerr << "NEW NODE:" << p_out_pg->nodes[j].toString() << endl;
+        cerr << "-- COEFFICIENT:" << p_out_pg->nodes[j].lit.wa_coefficient << endl;
+
+        cerr << "-- PARENT NODE:" << endl;
+        for(unordered_set<int>::iterator iter_pa=p_out_pg->nodes[j].parent_node.begin(); iter_pa!=p_out_pg->nodes[j].parent_node.end(); iter_pa++) {
+          cerr << p_out_pg->nodes[*iter_pa].toString() << endl;
+        }
+      
+        cerr << "-- LOOP PAIRED WITH OBSERVATIONS:" << endl;
+        for(uint_t k=0; k<nodes_obs.size(); k++) {
+          cerr << p_out_pg->nodes[j].toString() << "," << p_out_pg->nodes[nodes_obs[k]].toString() << endl;
+        }
+
+        /* EXAMPLE PRUNING. */
+        if("V" == g_store.claim(p_out_pg->nodes[j].lit.predicate)) p_out_pg->removeNode(p_out_pg->nodes[j]);
+      }
+      /* -- END EXAMPLE */
+    }
     
-    n_start = p_out_pg->nodes.size();
+    n_start = current_node_size; //p_out_pg->nodes.size();
   }
   
   p_out_pg->addHyperNode(nodes_obs);
@@ -1354,6 +1379,8 @@ void proof_graph_t::printGraph( const lp_solution_t &sol, const linear_programmi
   (*p_out) << "<proofgraph" << ("" != property ? (" " + property) : "") << ">" << endl;
   
   for( uint_t i=0; i<nodes.size(); i++ ) {
+    if(nodes[i].f_removed) continue;
+    
     unordered_map<int, int>::const_iterator iter_v = lprel.n2v.find(i);
     if( lprel.n2v.end() == iter_v ) continue;
     
@@ -1368,6 +1395,7 @@ void proof_graph_t::printGraph( const lp_solution_t &sol, const linear_programmi
 
       if(g_store.isEqual(nodes[i].lit.predicate, "!=")) continue;
       if( i == nj ) continue;
+      if(nodes[nj].f_removed) continue;
       
       unordered_map<int, int>::const_iterator iter_vj = lprel.n2v.find(nj);
       if( lprel.n2v.end() == iter_vj ) continue;
@@ -1402,13 +1430,17 @@ void proof_graph_t::printGraph( const lp_solution_t &sol, const linear_programmi
 
     for( uint_t i=0; i<iter_eg->second.size(); i++ ) {
 
+      bool   f_removed = false;
       uint_t n_active = 0;
       
       for( uint_t j=0; j<hypernodes[ iter_eg->second[i] ].size(); j++ ) {
         unordered_map<int, int>::const_iterator iter_vt = lprel.n2v.find( hypernodes[ iter_eg->second[i] ][j] );
-        if( lprel.n2v.end() == iter_vt ) continue;
-        if( 0.5 < sol.optimized_values[ iter_vt->second ] ) n_active++;
+        if(lprel.n2v.end() == iter_vt) continue;
+        if(nodes[hypernodes[ iter_eg->second[i] ][j]].f_removed) { f_removed = true; continue; }
+        if(0.5 < sol.optimized_values[ iter_vt->second ]) n_active++;
       }
+
+      if(f_removed) continue;
 
       (*p_out) << "<explanation name=\""<< edges_name.find(iter_eg->second[i])->second <<"\" active=\""<< (0.5 < sol.optimized_values[ iter_v->second ] && hypernodes[ iter_eg->second[i] ].size() == n_active ? "yes" : "no") <<"\" axiom=\"\">";
       

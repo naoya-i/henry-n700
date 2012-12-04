@@ -338,11 +338,11 @@ struct literal_t {
   store_item_t         predicate;
   vector<store_item_t> terms;
 
-  double               wa_number;
+  double               wa_number, wa_coefficient;
   string               extra, instantiated_by, theta, instantiated_by_all;
 
-  inline literal_t() : wa_number(1) {};
-  inline literal_t( const sexp_stack_t &s ) : wa_number(1) {
+  inline literal_t() : wa_number(1), wa_coefficient(1) {};
+  inline literal_t( const sexp_stack_t &s ) : wa_number(1), wa_coefficient(1) {
     if( s.isFunctor() ) {
       predicate = g_store.cashier( s.children[0]->children[0]->str );
       for( int i=1; i<s.children.size(); i++ ) {
@@ -350,8 +350,8 @@ struct literal_t {
           int num_colon = 0;
           extra     = s.children[i]->getString().substr(1);
           repeat(j, s.children[i]->getString().length()) if(':' ==s.children[i]->getString()[j]) num_colon++;
-          if(3 == num_colon)      wa_number = 1;
-          else if(1 == num_colon) wa_number = atof(s.children[i]->getString().substr(1).c_str());
+          if(3 == num_colon)      { wa_number = 1; wa_coefficient = 1; }
+          else if(1 == num_colon) { wa_number = atof(s.children[i]->getString().substr(1).c_str()); wa_coefficient = wa_number; }
           continue;
         }
         
@@ -580,11 +580,12 @@ struct pg_node_t {
   instantiated_by_t     instantiated_by;
   unordered_set<string> axiom_used, axiom_name_used;
   unordered_set<int>    nodes_appeared, parent_node, rhs;
-  bool                  f_prohibited;
+  bool                  f_prohibited, f_removed;
   
   vector<pair<store_item_t, store_item_t> > cond_neqs;
   
-  inline pg_node_t( const literal_t &_lit, pg_node_type_t _type, int _n ) : n(_n), depth(0), obs_node(-1), lit( _lit ), type( _type ), f_prohibited(false) {};
+  inline pg_node_t( const literal_t &_lit, pg_node_type_t _type, int _n ) :
+    n(_n), depth(0), obs_node(-1), lit( _lit ), type( _type ), f_prohibited(false), f_removed(false) {};
 
   inline string toString() const {
     return lit.toString() + ::toString( ":%d:%.2f", n, lit.wa_number );
@@ -957,6 +958,10 @@ struct proof_graph_t {
     return true;
     
   }
+
+  inline void removeNode(pg_node_t &n) {
+    n.f_removed = true;
+  }
   
   inline int addNode( const literal_t &lit, pg_node_type_t type, int n_parent = -1 ) {
 
@@ -1267,8 +1272,10 @@ struct external_module_t {
     
     PyObject *p_pylist = PyList_New(0);
     
-    repeat( i, context.p_proof_graph->nodes.size() )
+    repeat( i, context.p_proof_graph->nodes.size() ) {
+      if(context.p_proof_graph->nodes[i].f_removed) continue;
       PyList_Append(p_pylist, asTuple(*context.p_proof_graph, context.p_proof_graph->nodes[i]));
+    }
     
     return p_pylist;
   }

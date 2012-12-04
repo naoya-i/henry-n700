@@ -42,18 +42,21 @@ def cbScoreFunction( ctx ):
 
 			#
 			# EXPLANATION FOR p.
-			if p[0] != q[0] and repr(p[2]) in q[4].split(","):
+			if repr(p[2]) in q[4].split(","):
 				
 				# SELF-EXPLANATION IS PROHIBITED. (p => q => p)
 				if repr(q[2]) in p[4].split(","): continue
 
 				expl[q[7]] += ["p%d" % q[2]]
+
 				
 			#
 			# EXPLANATION BY UNIFICATION.
-			#if "" != p[4] and "" != q[4]:
+			if "" != p[4] and "" != q[4]:
 
-				# IF THEY ARE EXPLAINING THE SAME THING, JUST IGNORE THEM. (p => q, p => q)
+				# IF THEY HAVE EXPLAINER-EXPLAINEE RELATIONS SHIPS, DO NOT UNIFY THEM. (p => ... => q)
+				if repr(q[2]) in p[4].split(","): continue
+				if repr(p[2]) in q[4].split(","): continue
 				#if 0 < len(set(p[4].split(",")) & set(q[4].split(","))): continue
 
 			#

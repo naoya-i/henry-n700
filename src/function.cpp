@@ -117,7 +117,7 @@ bool function::enumeratePotentialElementalHypotheses( proof_graph_t *p_out_pg, v
 
   /* Make it relative cost. */
   repeat( i, nodes_obs.size() ) {
-    p_out_pg->nodes[nodes_obs[i]].lit.wa_number /= total_observation_cost;
+    //p_out_pg->nodes[nodes_obs[i]].lit.wa_number /= total_observation_cost;
     V(4) cerr << TS() << " Revised input: Type=" << p_out_pg->nodes[nodes_obs[i]].type << ", " << p_out_pg->nodes[nodes_obs[i]].lit.toString() << ", " << p_out_pg->nodes[nodes_obs[i]].lit.wa_number << endl;
   }
   

@@ -11,7 +11,7 @@ def main():
 	for f_input in pa.input:
 		f_input = open(f_input) if "-" != f_input else sys.stdin
 
-		weights = re.findall("\(weight \"(.*?)\" ([-e0-9.]+)\)", f_input.read())
+		weights = re.findall("\(weight \"(.*?)\" ([-e0-9.+]+)\)", f_input.read())
 		max_len = max([len(f) for f,w in weights])
 		
 		for f, w in sorted(weights, key=lambda x: float(x[1]), reverse=True) if pa.sorted else weights:

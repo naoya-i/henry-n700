@@ -8,318 +8,345 @@
 #include <algorithm>
 #include <map>
 
-#include "darts.h"
-
 using namespace function;
 
- 
-inline string _createSQLquery( unordered_map<int, string> *p_out_vars, logical_function_t &cnf_lf, bool f_all_placeholder=false ) {
-  vector<string>     query_sel, query_from, query_where, query_where_pred;
-  unordered_map<store_item_t, unordered_set<string> > argeq, predeq;
-          
-  repeat( j, cnf_lf.branches.size() ) {
-    if(g_store.isEqual(cnf_lf.branches[j].lit.predicate, "!=")) continue;
-    
-    query_sel.push_back( ::toString("p%d.*", 1+j) );
+bool _query(void (*p_callback)(const vector<int>&, void*),
+            void *p_context, const proof_graph_t &pg, const inference_configuration_t &c, const score_function_t::function_unit_t &unit,
+            vector<int> *p_stack=NULL, uint_t current_stack=0, bool f_mirror=false) {
 
-    string searchstr = g_store.claim(cnf_lf.branches[j].lit.predicate);
-    if( string::npos != searchstr.find("%") ) searchstr.replace( searchstr.find("%"), 2, "%" );
-    if( string::npos != searchstr.find("*") ) searchstr.replace( searchstr.find("*"), 1, "%" );
-    if( "%" != searchstr ) {
-      if( string::npos != searchstr.find("-") && string::npos != searchstr.find("%") )
-        query_where_pred.push_back( ::toString("p%d.suffix='%s'", 1+j, searchstr.substr( searchstr.find("-")+1 ).c_str() ) );
-      else
-        query_where_pred.push_back( ::toString("p%d.predicate", 1+j) + (string::npos == searchstr.find("%") ? "='" : " LIKE '")+ (searchstr) +"'" );
-    }
-    
-    if( string::npos == g_store.claim(cnf_lf.branches[j].lit.predicate).find("*") )
-      predeq[ cnf_lf.branches[j].lit.predicate ].insert( ::toString("p%d.predicate", 1+j) );
-    
-    query_from.push_back( ::toString("pehypothesis as p%d", 1+j) );
-
-    if( NULL != p_out_vars ) {
-      repeat( k, MaxArguments )
-        if( k < cnf_lf.branches[j].lit.terms.size() )
-          (*p_out_vars)[ j*MaxArguments+k ] = g_store.claim( cnf_lf.branches[j].lit.terms[k] );
-    }
-    
-    if( g_store.isEqual( cnf_lf.branches[j].lit.predicate, "=" ) || g_store.isEqual( cnf_lf.branches[j].lit.predicate, "!=" ) ) continue;
-    
-    repeat( k, cnf_lf.branches[j].lit.terms.size() ) {
-      if( g_store.isEqual( cnf_lf.branches[j].lit.terms[k], "*" ) ) break;
-      if( g_store.isEqual( cnf_lf.branches[j].lit.terms[k], "_" ) ) continue;
-      string searchstr = g_store.claim(cnf_lf.branches[j].lit.terms[k]);
-      if( string::npos != searchstr.find("%") ) searchstr.replace( searchstr.find("%"), 2, "%" );
-      if( !f_all_placeholder && "%" != searchstr ) query_where.push_back( ::toString("p%d",1+j) + "." + ::toString("arg%d",1+k) + (string::npos == g_store.claim(cnf_lf.branches[j].lit.terms[k]).find("%") ? "='" : " LIKE '")+ (searchstr) +"'" );
-      argeq[ cnf_lf.branches[j].lit.terms[k] ].insert( ::toString("p%d",1+j) + "." + ::toString("arg%d",1+k) );
-    }
-    
-    repeat( k, MaxArguments ) {
-      if( k < cnf_lf.branches[j].lit.terms.size() )
-        query_where.push_back( ::toString("p%d",1+j) + "." + ::toString("arg%d", 1+k) + "!=''" );
-      else if( !g_store.isEqual( cnf_lf.branches[j].lit.terms[ cnf_lf.branches[j].lit.terms.size()-1 ], "*" ) )
-        query_where.push_back( ::toString("p%d",1+j) + "." + ::toString("arg%d", 1+k) + "=''" );
-    }
-
-  }
-
-for( unordered_map<store_item_t, unordered_set<string> >::iterator iter_am=argeq.begin(); argeq.end()!=iter_am; ++iter_am ) {
-    vector<string> args( iter_am->second.begin(), iter_am->second.end() ); if( 1 == args.size() ) continue;
-    repeat( k, args.size()-1 ) query_where.push_back( args[k] + "=" + args[k+1] );
-  }
-
-  for( unordered_map<store_item_t, unordered_set<string> >::iterator iter_am=predeq.begin(); predeq.end()!=iter_am; ++iter_am ) {
-    vector<string> args( iter_am->second.begin(), iter_am->second.end() ); if( 1 == args.size() ) continue;
-    repeat( k, args.size()-1 ) query_where.push_back( args[k] + "=" + args[k+1] );
-  }
-
-  query_where.insert( query_where.begin(), query_where_pred.begin(), query_where_pred.end() );
-
-  return "SELECT "+ join(query_sel.begin(), query_sel.end(), ", ") +" FROM "+ join(query_from.begin(), query_from.end(), ", ") + (0 < query_where.size() ? " WHERE "+ join(query_where.begin(), query_where.end(), " AND ") : "");
+  if(c.isTimeout()) return false;
   
-}
-
-inline string _createSQLquery( unordered_map<int, string> *p_out_vars, const sexp_stack_t &srstack ) {
-  logical_function_t cnf_lf(srstack);
-  return _createSQLquery( p_out_vars, cnf_lf );
-}
-
-bool function::enumeratePotentialElementalHypotheses( proof_graph_t *p_out_pg, variable_cluster_t *p_out_evc, const logical_function_t &obs, const string &sexp_obs, const knowledge_base_t &kb, const inference_configuration_t &c ) {
-
-  double                   total_observation_cost = 0;
-  variable_cluster_t       vc;
-  vector<int>              nodes_obs;
-  vector<const literal_t*> literals;
-  obs.getAllLiterals( &literals );
-  
-  repeat( i, literals.size() ) {
-    if( g_store.isEqual( literals[i]->predicate, "=" ) ) {
-      //if( LossAugmented == c.objfunc || (LabelGiven == c.objfunc && i < c.initial_label_index) ) continue;
-      
-      repeat( j, literals[i]->terms.size() )
-        repeatf( k, j+1, literals[i]->terms.size() ) vc.add( literals[i]->terms[j], literals[i]->terms[k] );
-      
-      continue;
+  /* FOR EACH CONJUNCTION, */
+  if(NULL == p_stack) {
+    if(OrOperator == unit.lf.opr) {
+      repeat(i, unit.lf.branches.size()) {}
+    } else if(AndOperator == unit.lf.opr) {
+      vector<int> s;
+      if(!_query(p_callback, p_context, pg, c, unit, &s, 0))
+        return false;
     }
-    
-    int n_obs = p_out_pg->addNode( *literals[i], LabelGiven != c.objfunc || i < c.initial_label_index ? ObservableNode : LabelNode );
 
-    p_out_pg->nodes[ n_obs ].obs_node              = n_obs;
-    p_out_pg->nodes[ n_obs ].instantiated_by.axiom = ""; //sexp_obs;
-    p_out_pg->nodes[ n_obs ].instantiated_by.where = i;
-    nodes_obs.push_back( n_obs );
-
-    if(!g_store.isEqual( literals[i]->predicate, "!=" ))
-      total_observation_cost += p_out_pg->nodes[n_obs].lit.wa_number;
-    
-    V(4) cerr << TS() << " Input: Type=" << p_out_pg->nodes[ n_obs ].type << ", " << literals[i]->toString() << endl;
+    return true;
   }
 
-  /* Make it relative cost. */
-  repeat( i, nodes_obs.size() ) {
-    //p_out_pg->nodes[nodes_obs[i]].lit.wa_number /= total_observation_cost;
-    V(4) cerr << TS() << " Revised input: Type=" << p_out_pg->nodes[nodes_obs[i]].type << ", " << p_out_pg->nodes[nodes_obs[i]].lit.toString() << ", " << p_out_pg->nodes[nodes_obs[i]].lit.wa_number << endl;
-  }
+  vector<string> conditions;
+  vector<int> &stack = *p_stack;
+  unordered_set<int> set_stack(stack.begin(), stack.end());
+
+  if(current_stack == unit.lf.branches.size()) {
+    if(c.isTimeout()) return false;
+
+    /* CALL. */
+    (*p_callback)(stack, p_context);
+    return true;
+  }    
   
-  if( g_ext.isFunctionDefined( "cbPreprocess" ) ) {
-    mypyobject_t::buyTrashCan();
-
-    external_module_context_t emc = {p_out_pg, NULL, &c};
-    mypyobject_t pycon( PyCapsule_New( (void*)&emc, NULL, NULL) );
-    mypyobject_t pyarg( Py_BuildValue("(OO)", pycon.p_pyobj, external_module_t::asListOfTuples(*p_out_pg) ) );
-    mypyobject_t pyret( g_ext.call( "cbPreprocess", pyarg.p_pyobj ) );
-
-    if( NULL != pyret.p_pyobj ) {
-      /* [("p", ["x1", "x2", ...]), (), ...] */
-      repeat(i, PyList_Size(pyret.p_pyobj)) {
-        literal_t      lit(PyString_AsString(PyTuple_GetItem(PyList_GetItem(pyret.p_pyobj, i), 0)));
+  repeat(cc, current_stack) {
+    repeat(i, unit.lf.branches[cc].lit.terms.size()) {
+      if(unit.lf.branches[cc].lit.terms[i] == "_") continue;
         
-        repeat( j, PyList_Size(PyTuple_GetItem(PyList_GetItem(pyret.p_pyobj, i), 1)) ) {
-          lit.terms.push_back( g_store.cashier(PyString_AsString(PyList_GetItem(PyTuple_GetItem(PyList_GetItem(pyret.p_pyobj, i), 1), j)) ) );
+      repeat(j, unit.lf.branches[current_stack].lit.terms.size()) {
+        if(unit.lf.branches[current_stack].lit.terms[j] == "_") continue;
+        
+        if(unit.lf.branches[cc].lit.terms[i] == unit.lf.branches[current_stack].lit.terms[j]) {
+          const string &s = unit.lf.branches[current_stack].lit.toPredicateArity();
+          conditions.push_back(::toString("%s:%d:%s", ('?' == s[0] ? s.substr(1) : s).c_str(), j, pg.nodes[stack[cc]].lit.terms[i].c_str()));
+        }
+      } }
+  }
+  
+  if(0 == conditions.size()) {
+    
+    /* NO CONDITIONS. JUST ENUMERATE ALL LITERALS. */
+    const vector<int> *p_nodes;
+    const string &s = unit.lf.branches[current_stack].lit.predicate.toString();
+    
+    if(pg.getNode(&p_nodes, '?' == s[0] ? s.substr(1) : s, unit.lf.branches[current_stack].lit.terms.size())) {
+      repeat(i, p_nodes->size()) {
+        if(0 < set_stack.count((*p_nodes)[i])) continue; /* DO NOT GO INTO DEEPER IF IT'S ALREADY INVOLVED. */
+
+        /* CHECK IF THESE ARE UNIFIABLE OR NOT. */
+        bool f_unifiable = true;
+        repeat(j, pg.nodes[(*p_nodes)[i]].lit.terms.size()) {
+          if(unit.lf.branches[current_stack].lit.terms[j] != pg.nodes[(*p_nodes)[i]].lit.terms[j] &&
+             unit.lf.branches[current_stack].lit.terms[j].isConstant() && pg.nodes[(*p_nodes)[i]].lit.terms[j].isConstant())
+            { f_unifiable=false; break; }
         }
 
-        unordered_set<int> parents; int n_parent = -1;
+        if(!f_unifiable) continue;
         
-        repeat( j, PyList_Size(PyTuple_GetItem(PyList_GetItem(pyret.p_pyobj, i), 2)) ) {
-          n_parent = PyInt_AsLong(PyList_GetItem(PyTuple_GetItem(PyList_GetItem(pyret.p_pyobj, i), 2), j));
-          parents.insert(n_parent);
-        }
-
-        int n_obs = p_out_pg->addNode( lit, parents.size() > 0 ? HypothesisNode : ObservableNode, n_parent );
-        p_out_pg->nodes[ n_obs ].nodes_appeared        = parents;
-        p_out_pg->nodes[ n_obs ].obs_node              = n_parent == -1 ? n_obs : n_parent;
-        p_out_pg->nodes[ n_obs ].instantiated_by.axiom = ""; //sexp_obs;
-        p_out_pg->nodes[ n_obs ].instantiated_by.where = i;
-        p_out_pg->nodes[ n_obs ].lit.wa_number         = PyFloat_AsDouble(PyTuple_GetItem(PyList_GetItem(pyret.p_pyobj, i), 3));
-
-        if(0 == parents.size())
-          nodes_obs.push_back( n_obs );
-
-        vector<int> cnj; cnj.push_back(n_obs);
-        pg_hypernode_t hn = p_out_pg->addHyperNode(cnj);
-        
-        repeat( j, PyList_Size(PyTuple_GetItem(PyList_GetItem(pyret.p_pyobj, i), 2)) )
-          p_out_pg->addEdge(PyInt_AsLong(PyList_GetItem(PyTuple_GetItem(PyList_GetItem(pyret.p_pyobj, i), 2), j)), hn, "");
-        
-        if(ObservableNode == p_out_pg->nodes[n_obs].type) total_observation_cost += p_out_pg->nodes[n_obs].lit.wa_number;
-        
-        V(4) cerr << TS() << " Extra input: Type=" << p_out_pg->nodes[ n_obs ].type << ", " << lit.toString() << endl;
-        
+        vector<int> next_stack(stack);
+        next_stack.push_back((*p_nodes)[i]);
+        if(!_query(p_callback, p_context, pg, c, unit, &next_stack, current_stack+1)) return false;
       }
     }
+    
+  } else {
+    
+    /* ENUMERATE ALL LITERALS THAT SATISFY THE CONDITIONS. */
+    hash<string>       hashier;
+    unordered_set<int> satisfied_nodes;
+    
+    repeat(i, conditions.size()) {
+      proof_graph_t::eqhash_t::const_iterator j = pg.eqhash.find(hashier(conditions[i]));
 
-    mypyobject_t::cleanTrashCan();
+      /* IF THERE ARE NO LITERALS THAT SATISFY THE CONDITIONS, ABORT THE WHOLE PROCESS. */
+      if(pg.eqhash.end() == j) { satisfied_nodes.clear(); break; }
+      
+      const vector<int> &nodes = j->second;
+      unordered_set<int> new_satisfied_nodes;
+      
+      repeat(k, nodes.size()) {
+        if(0 == i) new_satisfied_nodes.insert(nodes[k]);
+        else if(0 < satisfied_nodes.count(nodes[k]))
+          new_satisfied_nodes.insert(nodes[k]);
+      }
+
+      satisfied_nodes = new_satisfied_nodes;
+    }
+
+    foreach(unordered_set<int>, i, satisfied_nodes) {
+      if(0 < set_stack.count(*i)) continue; /* DO NOT GO INTO DEEPER IF IT'S ALREADY INVOLVED. */
+      
+      vector<int> next_stack(stack);
+      next_stack.push_back(*i);
+      if(!_query(p_callback, p_context, pg, c, unit, &next_stack, current_stack+1)) return false;
+    }
   }
 
-  /* Reasoning on observations. */
-  // repeat( i, nodes_obs.size() ) {
-  //   if( c.isTimeout() ) return false;
-  //   if( ObservableNode != p_out_pg->nodes[ nodes_obs[i] ].type ) continue;
-  //   if( "" != p_out_pg->nodes[ nodes_obs[i] ].lit.extra && 0 == p_out_pg->nodes[ nodes_obs[i] ].lit.wa_number ) continue;
-  //   if( !instantiateBackwardChainings( p_out_pg, p_out_evc, nodes_obs[i], kb, c ) ) return false;
-  // }
-
-  /* Reasoning on abduced propositions. */
-  uint_t n_start = 0;
+  if(!f_mirror && (unit.lf.branches[current_stack].lit.predicate == "=" || unit.lf.branches[current_stack].lit.predicate == "!=")) {
+    score_function_t::function_unit_t swapped_unit(unit.name, unit.lf, unit.weight);
+    swap(swapped_unit.lf.branches[current_stack].lit.terms[0], swapped_unit.lf.branches[current_stack].lit.terms[1]);
+    if(!_query(p_callback, p_context, pg, c, swapped_unit, &stack, current_stack, true)) return false;
+  }
   
-  repeat( d, c.depthlimit ) {
-    uint_t current_node_size = p_out_pg->nodes.size();
+  return true;
+}
+
+bool function::enumeratePotentialElementalHypotheses(proof_graph_t *p_out_pg, const logical_function_t &obs, const knowledge_base_t &kb, const inference_configuration_t &c) {
+
+  if(!p_out_pg->f_obs_processed) {
+    
+    /* ADD OBSERVED LITERALS INTO THE GRAPH. */
+    vector<int>              nodes_obs;
+    vector<const literal_t*> literals_obs;
+    double                   total_observation_cost = 0;
+    
+    obs.getAllLiterals( &literals_obs );
+
+    /* COMPOSE OBSERVED VARIABLE CLUSTER. */
+    repeat( i, literals_obs.size() ) {
+      pg_node_type_t type_node = LabelGiven != c.objfunc || i < c.initial_label_index ? ObservableNode : LabelNode;
+      if((LabelNode == type_node || ObservableNode == type_node) && literals_obs[i]->predicate == "=") {
+        repeat( j, literals_obs[i]->terms.size() ) {
+          repeatf( k, j+1, literals_obs[i]->terms.size() ) {
+            p_out_pg->vc_observed.add(literals_obs[i]->terms[j], literals_obs[i]->terms[k]);
+          } }
+      }
+    }
+    
+    repeat( i, literals_obs.size() ) {
+      pg_node_type_t type_node = LabelGiven != c.objfunc || i < c.initial_label_index ? ObservableNode : LabelNode;
+      
+      if(literals_obs[i]->predicate == "=" || literals_obs[i]->predicate == "!=") {
+        if(LabelNode == type_node) continue;
+        
+        repeat( j, literals_obs[i]->terms.size() ) {
+          repeatf( k, j+1, literals_obs[i]->terms.size() ) {
+            if((literals_obs[i]->predicate == "=" && !p_out_pg->vc_observed.isInSameCluster(literals_obs[i]->terms[j], literals_obs[i]->terms[k])) ||
+               (literals_obs[i]->predicate == "!=" && p_out_pg->vc_observed.isInSameCluster(literals_obs[i]->terms[j], literals_obs[i]->terms[k]))) {
+                 W("Inconsistent: " << literals_obs[i]->toString());
+                 continue;
+               }
+
+            store_item_t t1 = literals_obs[i]->terms[j], t2 = literals_obs[i]->terms[k];
+            if(t1 > t2) swap(t1, t2);
+            
+            int n_obs = p_out_pg->addNode(literal_t(store_item_t(literals_obs[i]->predicate), t1, t2), type_node);
+            nodes_obs.push_back( n_obs );
+            V(4) cerr << TS() << " Input: Type=" << p_out_pg->nodes[ n_obs ].type << ", " << literals_obs[i]->toString() << endl;
+          } }
+      
+        continue;
+      }
+    
+      int n_obs = p_out_pg->addNode(*literals_obs[i], type_node);
+
+      p_out_pg->nodes[ n_obs ].instantiated_by.axiom = ""; //sexp_obs;
+      p_out_pg->nodes[ n_obs ].instantiated_by.where = i;
+      nodes_obs.push_back( n_obs );
+
+      total_observation_cost += p_out_pg->nodes[n_obs].lit.wa_number;
+    
+      V(4) cerr << TS() << " Input: Type=" << p_out_pg->nodes[ n_obs ].type << ", " << literals_obs[i]->toString() << endl;
+    }
+
+    /* Make it relative cost. */
+    repeat( i, nodes_obs.size() ) {
+      //p_out_pg->nodes[nodes_obs[i]].lit.wa_number /= total_observation_cost;
+      V(4) cerr << TS() << " Revised input: Type=" << p_out_pg->nodes[nodes_obs[i]].type << ", " << p_out_pg->nodes[nodes_obs[i]].lit.toString() << ", " << p_out_pg->nodes[nodes_obs[i]].lit.wa_number << endl;
+
+      repeat(j, p_out_pg->nodes[nodes_obs[i]].lit.terms.size())
+        p_out_pg->observed_variables.insert(p_out_pg->nodes[nodes_obs[i]].lit.terms[j]);
+    }
+
+    p_out_pg->addHyperNode(nodes_obs);
+    p_out_pg->f_obs_processed = true;    
+  }
+  
+  /* START REASONING. */
+  uint_t n_start = c.n_start;
+  int    d       = 0;
+  
+  while(true) {
+    uint_t current_node_size = p_out_pg->nodes.size(),
+      num_used_axiom_tokens = p_out_pg->used_axiom_tokens.size(), num_used_axiom_types = p_out_pg->used_axiom_types.size();
+    
     repeatf(i, n_start, current_node_size) {
       if(c.isTimeout()) return false;
-      if(LabelNode == p_out_pg->nodes[i].type) continue;
       if(p_out_pg->nodes[i].f_removed) continue;
       if("" != p_out_pg->nodes[i].lit.extra && 0 == p_out_pg->nodes[i].lit.wa_number) continue;
-      if(!instantiateBackwardChainings( p_out_pg, p_out_evc, i, kb, c )) return false;
+      if(!instantiateBackwardChainings( p_out_pg, i, kb, c )) return false;
     }
 
     if(n_start == p_out_pg->nodes.size()) { cerr << TS() << "d=" << (1+d) << ": no axioms were applied." << endl; break; }
     
-    cerr << TS() << "d=" << (1+d) << ": "<< (p_out_pg->nodes.size() - n_start) <<" axioms were applied." << endl;
+    cerr << TS() << "d=" << (1+d) << ": "<< (p_out_pg->used_axiom_tokens.size() - num_used_axiom_tokens) <<" axioms were applied" <<
+      " (new "<< (p_out_pg->used_axiom_types.size() - num_used_axiom_types) <<" types of axioms were instantiated)." << endl;
+    cerr << TS() << "d=" << (1+d) << ": "<< (p_out_pg->nodes.size() - current_node_size) <<" literals were generated." << endl;
 
+    n_start = current_node_size;
+    d++;
+  };
 
-    if(string::npos != c.output_info.find("densodemo")) {
-      /* -- START EXAMPLE */
-      for(uint_t j=n_start; j<p_out_pg->nodes.size(); j++) {
-        cerr << "NEW NODE:" << p_out_pg->nodes[j].toString() << endl;
-        cerr << "-- COEFFICIENT:" << p_out_pg->nodes[j].lit.wa_coefficient << endl;
+  p_out_pg->n_start = n_start;
+  p_out_pg->produceUnificationAssumptions(kb, c);
 
-        cerr << "-- PARENT NODE:" << endl;
-        for(unordered_set<int>::iterator iter_pa=p_out_pg->nodes[j].parent_node.begin(); iter_pa!=p_out_pg->nodes[j].parent_node.end(); iter_pa++) {
-          cerr << p_out_pg->nodes[*iter_pa].toString() << endl;
-        }
-      
-        cerr << "-- LOOP PAIRED WITH OBSERVATIONS:" << endl;
-        for(uint_t k=0; k<nodes_obs.size(); k++) {
-          cerr << p_out_pg->nodes[j].toString() << "," << p_out_pg->nodes[nodes_obs[k]].toString() << endl;
-        }
-
-        /* EXAMPLE PRUNING. */
-        if("V" == g_store.claim(p_out_pg->nodes[j].lit.predicate)) p_out_pg->removeNode(p_out_pg->nodes[j]);
-      }
-      /* -- END EXAMPLE */
-    }
+  /* PROCESS EQUALITIES IN LABEL NODES. */
+  if(!p_out_pg->f_lbl_processed) {
+    p_out_pg->f_lbl_processed = true;
     
-    n_start = current_node_size; //p_out_pg->nodes.size();
-  }
+    /* ADD OBSERVED LITERALS INTO THE GRAPH. */
+    vector<int>              nodes_obs;
+    vector<const literal_t*> literals_obs;
+    
+    obs.getAllLiterals( &literals_obs );
   
-  p_out_pg->addHyperNode(nodes_obs);
-
-  /* Add the equality. */  
-  foreach( variable_cluster_t::cluster_t, iter_vc, vc.clusters ) {
-    if( 2 > iter_vc->second.size() ) continue;
-  
-    literal_t equality( PredicateSubstitution );
+    repeat( i, literals_obs.size() ) {
+      pg_node_type_t type_node = LabelGiven != c.objfunc || i < c.initial_label_index ? ObservableNode : LabelNode;
       
-    for( unordered_set<store_item_t>::iterator iter_v=iter_vc->second.begin(); iter_vc->second.end()!=iter_v; ++iter_v )
-      equality.terms.push_back( *iter_v );
+      if(!(LabelNode == type_node && (literals_obs[i]->predicate == "=" || literals_obs[i]->predicate == "!="))) continue;
       
-    int n_obs = p_out_pg->addNode( equality, LabelGiven == c.objfunc ? LabelNode : ObservableNode );
+      repeat( j, literals_obs[i]->terms.size() ) {
+        repeatf( k, j+1, literals_obs[i]->terms.size() ) {
+          if((literals_obs[i]->predicate == "=" && !p_out_pg->vc_observed.isInSameCluster(literals_obs[i]->terms[j], literals_obs[i]->terms[k])) ||
+             (literals_obs[i]->predicate == "!=" && p_out_pg->vc_observed.isInSameCluster(literals_obs[i]->terms[j], literals_obs[i]->terms[k]))) {
+            W("Inconsistent: " << literals_obs[i]->toString());
+            continue;
+          }
+            
+          /* ADD IT IF IT ALREADY EXISTS. */
+          store_item_t t1 = literals_obs[i]->terms[j], t2 = literals_obs[i]->terms[k];
+          if(t1 > t2) swap(t1, t2);
+            
+          int n_obs = literals_obs[i]->predicate == "=" ?
+            p_out_pg->getSubNode(t1, t2) :
+            p_out_pg->getNegSubNode(t1, t2);
+            
+          if(-1 == n_obs) {
+            W("Not in search space: " << literals_obs[i]->terms[j] << literals_obs[i]->predicate << literals_obs[i]->terms[k]);
 
-    p_out_pg->nodes[ n_obs ].obs_node              = n_obs;
-    p_out_pg->nodes[ n_obs ].instantiated_by.axiom = ""; //sexp_obs;
-    nodes_obs.push_back( n_obs );
+            if(literals_obs[i]->predicate == "=" && !c.use_only_user_score)
+              p_out_pg->f_label_not_found = true;
+            
+            if(literals_obs[i]->predicate == "!=")
+              n_obs = p_out_pg->addNode(literal_t(store_item_t(literals_obs[i]->predicate), t1, t2), type_node);
+          } else {
+            /* IF EQUALITY IS DERIVED FROM ONLY OBSERVATIONS, ASSUME THAT WE DON'T HAVE THE LABEL IN SEARCH SPACE. */
+            if(literals_obs[i]->predicate == "=" && !c.use_only_user_score) {
+              const vector<int> *p_hypernodes;
+              bool               f_found_except_mention = false;
+            
+              if(p_out_pg->getAssociatedHyperNode(&p_hypernodes, n_obs)) {
+                repeat(x, p_hypernodes->size()) {
+                  cerr << "HELLO! " << p_out_pg->hypernodeToString((*p_hypernodes)[x]) << endl;
+                  if(string::npos == p_out_pg->hypernodeToString((*p_hypernodes)[x]).find("mention")) { f_found_except_mention = true; break; }
+                }
+              }
 
-    V(4) cerr << TS() << " Input: Type=" << p_out_pg->nodes[ n_obs ].type << ", " << equality.toString() << endl;
+              if(!f_found_except_mention) p_out_pg->f_label_not_found = true;
+            }
+            
+            p_out_pg->nodes[n_obs].type = type_node;
+            V(4) cerr << TS() << " Input: Type=" << p_out_pg->nodes[ n_obs ].type << ", " << literals_obs[i]->toString() << endl;
+          }
+        } }
+      
+      continue;
+    }
+
   }
   
   return true;
-  
 }
 
-bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cluster_t *p_out_evc, int n_obs, const knowledge_base_t &kb, const inference_configuration_t &c) {
-
-  if( p_out_pg->nodes[ n_obs ].depth > (signed)c.depthlimit-1 ) return true;
+bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, int n_obs, const knowledge_base_t &kb, const inference_configuration_t &c) {
   
-  int unifiable_axioms;
-  if( 0 == kb.da.size() ) return true;
-  kb.da.exactMatchSearch( p_out_pg->nodes[ n_obs ].lit.toPredicateArity().c_str(), unifiable_axioms );
+  if( p_out_pg->nodes[ n_obs ].depth > (signed)c.depthlimit-1 ) return true;
 
-  if( -1 == unifiable_axioms ) return true;
-  if( c.isTimeout() ) return false;
+  vector<string> axioms;
+  string         key_pa = p_out_pg->nodes[n_obs].lit.toPredicateArity();
+
+  if(kb.isSearchWithConstant(key_pa)) {
+    repeat(i, p_out_pg->nodes[n_obs].lit.terms.size()) {
+      if(p_out_pg->nodes[n_obs].lit.terms[i].isConstant())
+        key_pa += "/" + p_out_pg->nodes[n_obs].lit.terms[i].toString();
+    }
+
+    V(5) cerr << TS() << "SEARCH WITH CONSTANT PREDICATE: " << key_pa << endl;
+  }
+  
+  if(!kb.search(&axioms, key_pa)) return true;
+  if(c.isTimeout()) return false;
 
   /* For each unifiable axiom, */
-  istringstream iss_axiom_set( kb.axioms[ unifiable_axioms ] );
-  string        axiom;
   string        log_head = ":-D";
 
   unordered_set<string> applied_axioms;
   
-  while( getline( iss_axiom_set, axiom, '\t' ) ) {
-
-    istringstream iss_axiom( axiom );
-    V(5) cerr << TS() << log_head << "instantiate: " << axiom << " for " << endl;
-    p_out_pg->instantiated_axioms.insert( axiom );
-
-    for( sexp_reader_t sr(iss_axiom); !sr.isEnd(); ++sr ) {
-
-      if( !sr.stack.isFunctor( "B" ) ) continue;
+  repeat(a, axioms.size()) {
+    istringstream iss_axiom(axioms[a]);
+    V(5) cerr << TS() << log_head << "/d=" << p_out_pg->nodes[ n_obs ].depth+1 << "/instantiate: " << axioms[a] << " for " << endl;
+    p_out_pg->used_axiom_types.insert(axioms[a]);
+    
+    for(sexp_reader_t sr(iss_axiom); !sr.isEnd(); ++sr) {
+      if(!sr.stack.isFunctor(FnBackgroundKnowledge)) continue;
+      if(c.isTimeout()) return false;
         
-      int i_lf = sr.stack.findFunctorArgument(ImplicationString), i_name = sr.stack.findFunctorArgument("name");
+      int i_lf = sr.stack.findFunctorArgument(ImplicationString), i_name = sr.stack.findFunctorArgument("name"),
+        i_disj = sr.stack.findFunctorArgument(FnAxiomDisjoint);
+      bool f_ghost = string::npos != sr.stack.toString().find("I-AM-GHOST");
 
       if(-1 == i_lf) {
-        int                i_inc     = sr.stack.findFunctorArgument(IncString); if(-1 == i_inc) continue;
-        logical_function_t lf( *sr.stack.children[i_inc] );
-        string             axiom_str = lf.toString();
-      
-        /* Already applied? */
-        if( p_out_pg->p_x_axiom[n_obs][axiom_str] > 0 ) continue;
-        
-        /* Find the inconsistent pair! */
-        const vector<int> *p_nodes;
-        if(!p_out_pg->getNode( &p_nodes, lf.branches[0].lit.predicate, lf.branches[0].lit.terms.size())) continue;
-
-        repeat(i, p_nodes->size()) {
-          V(5) cerr << TS() << "Inconsistent: " << p_out_pg->nodes[(*p_nodes)[i]].toString() << ", " << p_out_pg->nodes[n_obs].toString() << endl;
-          
-          unifier_t theta;
-
-          repeat(t1, lf.branches[0].lit.terms.size()) {
-            repeat(t2, lf.branches[1].lit.terms.size()) {
-              if(lf.branches[0].lit.terms[t1] == lf.branches[1].lit.terms[t2]) {
-                theta.add(p_out_pg->nodes[(*p_nodes)[i]].lit.terms[t1], p_out_pg->nodes[n_obs].lit.terms[t2]);
-              }
-            } }
-
-          p_out_pg->p_x_axiom[n_obs][axiom_str] = 1;
-          p_out_pg->p_x_axiom[(*p_nodes)[i]][axiom_str] = 1;
-          p_out_pg->mutual_exclusive_nodes.push_back(make_pair(make_pair((*p_nodes)[i], n_obs), theta));
-        }
-        
+        int i_inc = sr.stack.findFunctorArgument(IncString); if(-1 == i_inc) continue;
+        p_out_pg->detectInconsistentNodes(n_obs, logical_function_t(*sr.stack.children[i_inc]));
         continue;
       }
 
+      if(LabelNode == p_out_pg->nodes[n_obs].type) continue;
+      
       if(-1 != i_name) {
         string name_axiom = sr.stack.children[i_name]->children[1]->getString();
         if(string::npos != name_axiom.find("*")) {
           /* How many times is this axioms applied so far? */
-          int num_limit = atoi(name_axiom.substr(name_axiom.find("*")+1).c_str());
+          uint_t num_limit = atoi(name_axiom.substr(name_axiom.find("*")+1).c_str());
           if(num_limit <= p_out_pg->nodes[n_obs].axiom_name_used.count(name_axiom)) continue;
         } }
 
-      
       /* For each clause that has the literal n_obs in its right-hand side, */
       logical_function_t lf( *sr.stack.children[i_lf] );
-      string             axiom_str = lf.toString();
+      string             axiom_str  = lf.toString();
+      string             axiom_disj = -1 == i_disj ? "" : sr.stack.children[i_disj]->children[1]->getString();
       
       /* Already applied? */
       if( p_out_pg->p_x_axiom[n_obs][axiom_str] > 0 ) continue;
@@ -339,41 +366,41 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
       
       if( Literal != lf.branches[1].opr ) { if( lf.branches[1].branches.size() > 1 ) {
           /* Multiple RHS literals. */
-          string             query    = _createSQLquery( NULL, lf.branches[1], true ); 
-          sqlite3_stmt      *p_stmt   = NULL;
-          char              *p_val    = NULL;
-          uint_t             num_cols = 0;
+          struct { static void callback(const vector<int> &stack, void *p_context) {
+            ((vector<vector<int> >*)p_context)->push_back(stack);
+          } } cb;
+            
+          vector<vector<int> > combinations;
+          score_function_t::function_unit_t unit("", lf.branches[1], 0.0);
+          _query(cb.callback, (void*)&combinations, *p_out_pg, c, unit);
+          
           unifier_t          theta;
           vector<int>        rhs_candidates;
           vector<literal_t>  rhs_literals;
 
-          if( SQLITE_OK != sqlite3_prepare_v2(p_out_pg->p_db, query.c_str(), -1, &p_stmt, 0) ) { E( "Invalid query: " << query.c_str() ); continue; }
-          if( 0 == (num_cols = sqlite3_column_count(p_stmt)) ) sqlite3_finalize(p_stmt);
-          else {
-            while( SQLITE_ROW == sqlite3_step(p_stmt) ) {              
-              repeat( k, lf.branches[1].branches.size() ) {
-                if( NULL != (p_val = (char *)sqlite3_column_text(p_stmt, (MaxBasicProp+MaxArguments)*k)) ) {                  
-                  if( !getMGU( &theta, lf.branches[1].branches[k].lit, p_out_pg->nodes[ atoi(p_val) ].lit ) ) goto BED;
-                  rhs_candidates.push_back( atoi(p_val) );
-                  rhs_literals.push_back(lf.branches[1].branches[k].lit);
-                }
-              }
+          repeat(j, combinations.size()) {
+            repeat(k, combinations[j].size()) {
+              if(c.isTimeout()) return false;
               
-              {
-                unordered_set<int> aobss(rhs_candidates.begin(), rhs_candidates.end());
-                if(aobss.size() != rhs_candidates.size()) goto BED;
-              }
+              if(!getMGU(&theta, lf.branches[1].branches[k].lit, p_out_pg->nodes[combinations[j][k]].lit))
+                goto BED;
               
-              rhs_collections.push_back(make_pair(rhs_literals, rhs_candidates));
-              continue;
-              
-            BED:
-              theta = unifier_t(); rhs_candidates.clear(); rhs_literals.clear();
-              continue;
+              rhs_candidates.push_back(combinations[j][k]);
+              rhs_literals.push_back(lf.branches[1].branches[k].lit);
             }
-
+              
+            {
+              unordered_set<int> aobss(rhs_candidates.begin(), rhs_candidates.end());
+              if(aobss.size() != rhs_candidates.size()) goto BED;
+            }
+              
+            rhs_collections.push_back(make_pair(rhs_literals, rhs_candidates));
+            continue;
+              
+          BED:
+            theta = unifier_t(); rhs_candidates.clear(); rhs_literals.clear();
+            continue;
           }
-
         } else {
           /* Single RHS literal. */
           vector<int> rhs_single; vector<literal_t> rhs_lf;
@@ -390,21 +417,29 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
 
       if(rhs_collections.size() > 0)
         p_out_pg->p_x_axiom[n_obs][axiom_str] = 1;
+
+      unordered_set<int> rhs_binding_literals;
       
       repeat(i, rhs_collections.size()) {
-        unifier_t theta;
-        bool      f_inc = false;
+        if(c.isTimeout()) return false;
+        
+        unifier_t      theta;
+        bool           f_inc = false;
+        vector<string> rhs_instances;
 
         /* Produce substitution. */
         repeat(j, rhs_collections[i].first.size()) {
           p_out_pg->p_x_axiom[rhs_collections[i].second[j]][axiom_str] = 1;
           V(5) cerr << TS() << rhs_collections[i].first[j].toString() << "~" << p_out_pg->nodes[rhs_collections[i].second[j]].toString() << endl;
           if( !getMGU( &theta, rhs_collections[i].first[j], p_out_pg->nodes[rhs_collections[i].second[j]].lit ) ) { f_inc = true; }
+          rhs_instances.push_back(p_out_pg->nodes[rhs_collections[i].second[j]].toString());
         }
 
         if(f_inc) continue;
 
         V(5) cerr << TS() << theta.toString() << endl;
+        
+        p_out_pg->used_axiom_tokens.insert(axiom_str + theta.toString());
         
         /* For each literal, */
         vector<literal_t> lhs_literals;
@@ -416,6 +451,14 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
             lhs_literals.push_back( lf.branches[0].branches[j].lit );
         }
 
+        /* BINDING FOR RHS. */
+        repeat(j, theta.substitutions.size()) {
+          if(theta.substitutions[j].terms[0].isConstant() && !theta.substitutions[j].terms[1].isConstant()) {
+            rhs_binding_literals.insert(lhs_literals.size());
+            lhs_literals.push_back(theta.substitutions[j]);
+          }
+        }
+        
         /* Check if this lhs matches the condition stated by the given label. */
         bool f_prohibited = false;
         if( LabelGiven == c.objfunc ) {
@@ -433,9 +476,9 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
         /* Conditionin by equality. */
         vector<pair<store_item_t, store_item_t> > cond_neqs;
         repeat(j, lf.branches[1].branches.size()) {          
-          if(g_store.isEqual(lf.branches[1].branches[j].lit.predicate, "!=")) {
-            if(-1 == theta.map(lf.branches[1].branches[j].lit.terms[0])) theta.add(lf.branches[1].branches[j].lit.terms[0], g_store.issueUnknown());
-            if(-1 == theta.map(lf.branches[1].branches[j].lit.terms[1])) theta.add(lf.branches[1].branches[j].lit.terms[1], g_store.issueUnknown());
+          if(lf.branches[1].branches[j].lit.predicate == "!=") {
+            if(theta.map(lf.branches[1].branches[j].lit.terms[0]) == "") theta.add(lf.branches[1].branches[j].lit.terms[0], store_item_t::issueUnknown());
+            if(theta.map(lf.branches[1].branches[j].lit.terms[1]) == "") theta.add(lf.branches[1].branches[j].lit.terms[1], store_item_t::issueUnknown());
             
             cond_neqs.push_back(make_pair(theta.map(lf.branches[1].branches[j].lit.terms[0]), theta.map(lf.branches[1].branches[j].lit.terms[1])));
           }
@@ -443,16 +486,22 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
 
         /* Perform backward-chaining. */
         vector<int> backchained_literals;
+        unordered_set<int> associated_hypernodes;
         
         for( uint_t j=0; j<lhs_literals.size(); j++ ) {
 
           literal_t &lit = lhs_literals[j];
 
-          /* Issue unknown variables */
-          for( uint_t k=0; k<lit.terms.size(); k++ )
-            if( !theta.isApplied( lit.terms[k] ) ) theta.add( lit.terms[k], g_store.issueUnknown() );
+          /* ISSUE UNKNOWN VARIABLES. EXCEPT LITERALS THAT ARE PRODUCED FROM RHS BINDING. */
+          if(0 == rhs_binding_literals.count(j)) {
+            for( uint_t k=0; k<lit.terms.size(); k++ ) {
+              static size_t s_cag = 0;
+              if('!' == lit.terms[k].toString()[0]) { theta.add(lit.terms[k], store_item_t(::toString("CAG_%d", s_cag++))); }
+              if(!lit.terms[k].isConstant() && !theta.isApplied(lit.terms[k])) theta.add(lit.terms[k], store_item_t::issueUnknown());
+            }
           
-          theta.apply( &lit );
+            theta.apply( &lit );
+          }
           
           int    n_backchained;
           double rhs_cost = 0.0; 
@@ -462,25 +511,36 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
           
           /* If the completely same node is found, then recycle it. */
           vector<int> recycles;
+          bool        f_found_recycling_node = p_out_pg->getNode(&recycles, lit);
 
-          if( string::npos != c.output_info.find("GAP") && p_out_pg->getNode( &recycles, lit ) ) {
-          
+          if(f_found_recycling_node) {
+            if(LabelNode == p_out_pg->nodes[recycles[0]].type) f_found_recycling_node = false;
+          }
+
+          if(f_found_recycling_node) {
+            if(0 < p_out_pg->nodes[n_obs].nodes_appeared.count(recycles[0])) continue;
+              
+            V(5) cerr << TS() << "recycled: " << p_out_pg->nodes[recycles[0]].toString() << endl;
+            
             n_backchained                                           = recycles[0];
-            p_out_pg->nodes[n_backchained].parent_node.insert( n_obs );
             p_out_pg->nodes[n_backchained].axiom_used.insert( p_out_pg->nodes[n_obs].axiom_used.begin(), p_out_pg->nodes[n_obs].axiom_used.end() );
             p_out_pg->nodes[n_backchained].axiom_used.insert( axiom_str );
             p_out_pg->nodes[n_backchained].axiom_name_used          = p_out_pg->nodes[n_obs].axiom_name_used;
             p_out_pg->nodes[n_backchained].axiom_name_used.insert(-1 != i_name ? (-1 != i_name ? sr.stack.children[i_name]->children[1]->getString() : "?") : "");
             p_out_pg->nodes[n_backchained].nodes_appeared.insert( n_obs );
             p_out_pg->nodes[n_backchained].nodes_appeared.insert(rhs_collections[i].second.begin(), rhs_collections[i].second.end());
-            p_out_pg->nodes[n_backchained].lit.wa_number           *= rhs_cost;
+            //p_out_pg->nodes[n_backchained].lit.wa_number           *= rhs_cost;
             p_out_pg->nodes[n_backchained].lit.instantiated_by      = p_out_pg->nodes[n_backchained].instantiated_by.axiom;
             p_out_pg->nodes[n_backchained].lit.instantiated_by_all  = p_out_pg->nodes[n_obs].lit.instantiated_by_all + "#" + p_out_pg->nodes[n_backchained].instantiated_by.axiom;
             p_out_pg->nodes[n_backchained].rhs.insert(n_obs);
-            p_out_pg->nodes[n_backchained].rhs.insert(rhs_collections[i].second.begin(), rhs_collections[i].second.end());          
+            p_out_pg->nodes[n_backchained].rhs.insert(rhs_collections[i].second.begin(), rhs_collections[i].second.end());
             p_out_pg->nodes[n_backchained].cond_neqs.insert(p_out_pg->nodes[n_backchained].cond_neqs.end(), cond_neqs.begin(), cond_neqs.end());
-            p_out_pg->nodes[n_backchained].f_prohibited             = f_prohibited;;
-          
+            p_out_pg->nodes[n_backchained].f_prohibited             = f_prohibited;
+
+            const vector<int> *p_associated_hns;
+            if(p_out_pg->getAssociatedHyperNode(&p_associated_hns, n_backchained))
+              associated_hypernodes.insert(p_associated_hns->begin(), p_associated_hns->end());
+            
           } else {
 
             n_backchained = p_out_pg->addNode( lit, HypothesisNode, n_obs );
@@ -488,9 +548,7 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
             /* Set the node parameters. */
             V(5) cerr << TS() << log_head << p_out_pg->nodes[n_backchained].lit.wa_number << "*" << rhs_cost << endl;
             
-            p_out_pg->nodes[n_backchained].depth                    = p_out_pg->nodes[n_obs].depth + 1;
-            p_out_pg->nodes[n_backchained].obs_node                 = p_out_pg->nodes[n_obs].obs_node;
-            p_out_pg->nodes[n_backchained].parent_node.insert( n_obs );
+            p_out_pg->nodes[n_backchained].depth                    = p_out_pg->nodes[n_obs].depth + (f_ghost ? 0 : 1);
             p_out_pg->nodes[n_backchained].instantiated_by.axiom    = -1 != i_name ? (-1 != i_name ? sr.stack.children[i_name]->children[1]->getString() : "?") : "";
             p_out_pg->nodes[n_backchained].instantiated_by.where    = j;
             p_out_pg->nodes[n_backchained].axiom_used.insert( p_out_pg->nodes[n_obs].axiom_used.begin(), p_out_pg->nodes[n_obs].axiom_used.end() );
@@ -500,7 +558,7 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
             p_out_pg->nodes[n_backchained].nodes_appeared           = p_out_pg->nodes[n_obs].nodes_appeared;
             p_out_pg->nodes[n_backchained].nodes_appeared.insert(rhs_collections[i].second.begin(), rhs_collections[i].second.end());
             p_out_pg->nodes[n_backchained].lit.theta                = theta.toString();
-            p_out_pg->nodes[n_backchained].lit.wa_number           *= rhs_cost;
+            //p_out_pg->nodes[n_backchained].lit.wa_number           *= rhs_cost;
             p_out_pg->nodes[n_backchained].lit.instantiated_by      = p_out_pg->nodes[n_backchained].instantiated_by.axiom;
             p_out_pg->nodes[n_backchained].lit.instantiated_by_all  = p_out_pg->nodes[n_obs].lit.instantiated_by_all + "#" + p_out_pg->nodes[n_backchained].instantiated_by.axiom;
             p_out_pg->nodes[n_backchained].rhs.insert(n_obs);
@@ -508,18 +566,50 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
             p_out_pg->nodes[n_backchained].cond_neqs.insert(p_out_pg->nodes[n_backchained].cond_neqs.end(), cond_neqs.begin(), cond_neqs.end());
             p_out_pg->nodes[n_backchained].f_prohibited             = f_prohibited;
 
-            V(5) cerr << TS() << log_head << "new Literal: " << p_out_pg->nodes[n_backchained].lit.toString() << endl;
+            V(5) cerr << TS() << log_head << "new Literal: " <<
+              p_out_pg->nodes[n_backchained].lit.toString() << endl;
           
           }
           
           backchained_literals.push_back( n_backchained );
-        
+
+          if(0 < c.prohibited_literals.count(n_backchained))
+            p_out_pg->nodes[n_backchained].f_prohibited = true;
         }
 
         if( backchained_literals.size() > 0 ) {
-          pg_hypernode_t hn = p_out_pg->addHyperNode( backchained_literals );
+          /* Examine already have the same hypernode. */
+          pg_hypernode_t hn = -1;
+            
+          foreach(unordered_set<int>, iter_hns, associated_hypernodes) {
+            if(p_out_pg->hypernodes[*iter_hns].size() != backchained_literals.size()) continue;
+            
+            bool f_all_found = false;
+            
+            foreach(vector<int>, iter_hn, p_out_pg->hypernodes[*iter_hns]) {
+              f_all_found = false;
+              foreach(vector<int>, iter_bl, backchained_literals) {
+                if(*iter_bl == *iter_hn) { f_all_found = true; break; }
+              }
+              if(!f_all_found) break;
+            }
+
+            if(!f_all_found) continue;
+            
+            hn = *iter_hns;
+            break;
+          }
+          
+          hn = p_out_pg->addHyperNode( backchained_literals );
+          
           repeat( j, rhs_collections[i].second.size() )
-            p_out_pg->addEdge( rhs_collections[i].second[j], hn, -1 != i_name ? (-1 != i_name ? sr.stack.children[i_name]->children[1]->getString() : "?") : "" );
+            p_out_pg->addEdge(rhs_collections[i].second[j], hn, -1 != i_name ? sr.stack.children[i_name]->children[1]->getString() : "?", rhs_collections[i].second.size(), axiom_str);
+
+          if("" != axiom_disj || c.explanation_disjoint) {
+            static hash<string> hashier;
+            p_out_pg->axiom_disjoint_set[hashier(::join(rhs_instances.begin(), rhs_instances.end()))].insert(hn);
+            V(6) cerr << TS() << "disjoint: " << ::join(rhs_instances.begin(), rhs_instances.end()) << ::toString("%s:%s:%s", axioms[i].c_str(), theta.toString().c_str(), axiom_disj.c_str()) << endl;
+          }
         }
       }
     }
@@ -529,658 +619,483 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
   return true;
 }
 
-inline int _getCorefVar( store_item_t t1, store_item_t t2, const lp_problem_mapping_t &lprel ) {
-  store_item_t t1s = t1, t2s = t2; if( t1s > t2s ) swap( t1s, t2s );
+void proof_graph_t::detectInconsistentNodes(int n_obs, const logical_function_t &lf) {
+  string axiom_str = lf.toString();
+  
+  /* Already applied? */
+  if(p_x_axiom[n_obs][axiom_str] > 0 ) return;
+  
+  /* Find the inconsistent pair! */
+  const vector<int> *p_nodes;
+  if(nodes[n_obs].lit.predicate == lf.branches[1].lit.predicate) {
+    if(!getNode(&p_nodes, lf.branches[0].lit.predicate, lf.branches[0].lit.terms.size())) return;
+  } else {
+    if(!getNode(&p_nodes, lf.branches[1].lit.predicate, lf.branches[1].lit.terms.size())) return;
+  }
+  
+  repeat(i, p_nodes->size()) {          
+    unifier_t theta;
+
+    repeat(t1, lf.branches[0].lit.terms.size()) {
+      repeat(t2, lf.branches[1].lit.terms.size()) {
+        if(lf.branches[0].lit.terms[t1] == lf.branches[1].lit.terms[t2]) {
+          theta.add(nodes[(*p_nodes)[i]].lit.terms[t1], nodes[n_obs].lit.terms[t2]);
+        }
+      } }
+
+    V(5) cerr << TS() << "Inconsistent: " << nodes[(*p_nodes)[i]].toString() << ", " << nodes[n_obs].toString() << theta.toString() << endl;
     
-  pairwise_vars_t::const_iterator k1 = lprel.pp2v.find(t1s);
-  if( lprel.pp2v.end() == k1 ) return -1;
-
-  unordered_map<store_item_t, int>::const_iterator k2 = k1->second.find(t2s);
-  return k1->second.end() == k2 ? -1 : k2->second;
+    p_x_axiom[n_obs][axiom_str] = 1;
+    p_x_axiom[(*p_nodes)[i]][axiom_str] = 1;
+    mutual_exclusive_nodes.push_back(make_pair(make_pair((*p_nodes)[i], n_obs), theta));
+  }
 }
 
-int _createCorefVar(linear_programming_problem_t *p_out_lp, lp_problem_mapping_t *p_out_lprel, lp_inference_cache_t *p_out_cache, unordered_map<int, unordered_set<int> > *p_out_cu, store_item_t t1, store_item_t t2, bool f_create_new = true, int opt_level = 0) {
-  if( t1 > t2 ) swap(t1, t2);
-  
-  if( f_create_new ) p_out_cache->evc.add( t1, t2 );
-  
-  /* Skip the pair of logical terms if the following conditions hold:
-     1. These two do not involve any unifiability of atoms;
-     2. Both are constants;
-     3. They do not belong to the same potential equivalent cluster;
-     *4. One of them are not observed.
-  */
-  if( t1 == t2 ) return -1;
-  if( g_store.isConstant(t1) && g_store.isConstant(t2) ) return -1;
+bool proof_graph_t::produceUnificationAssumptions(const knowledge_base_t &kb, const inference_configuration_t &c) {
 
-  if( NULL != p_out_cu ) {
-    if( g_store.isConstant(t1) && !g_store.isConstant(t2) ) (*p_out_cu)[t2].insert(t1);
-    if( g_store.isConstant(t2) && !g_store.isConstant(t1) ) (*p_out_cu)[t1].insert(t2);
-  }
-  
-  variable_cluster_t::variable_mapper_t::iterator i_v1 = p_out_cache->evc.map_v2c.find(t1);
-  if( p_out_cache->evc.map_v2c.end() == i_v1 ) return -1;
-  
-  variable_cluster_t::variable_mapper_t::iterator i_v2 = p_out_cache->evc.map_v2c.find(t2);
-  if( p_out_cache->evc.map_v2c.end() == i_v2 ) return -1;
-  
-  if( i_v1->second != i_v2->second ) return -1;
-  
-  int& ret = t1 < t2 ? p_out_lprel->pp2v[t1][t2] : p_out_lprel->pp2v[t2][t1];
-  if( 0 == ret ) { ret = p_out_lp->addVariable( lp_variable_t( "p_"+g_store.claim(t1)+g_store.claim(t2) ) ); p_out_lp->variables[ ret ].obj_val = -EqBias; p_out_lp->variables[ ret ].opt_level = opt_level; }
-
-  return ret;
-}
-
-inline int _createNodeVar( linear_programming_problem_t *p_out_lp, lp_problem_mapping_t *p_out_lprel, lp_inference_cache_t *p_out_cache, unordered_map<int, unordered_set<int> > *p_out_cu, const proof_graph_t &pg, int n, int opt_level = 0 ) {
-  int& v_h = p_out_lprel->n2v[n];
-  if( 0 != v_h ) return v_h;
-  
-  v_h = p_out_lp->addVariable( lp_variable_t( "h_" + pg.nodes[n].lit.toString() ) );
-
-  lp_constraint_t con_mrhs("mrhs", GreaterEqual, 0);
-  
-  if( ObservableNode == pg.nodes[n].type || LabelNode == pg.nodes[n].type ) p_out_lp->variables[ v_h ].fixValue( 1.0 );
-  else if(2 <= pg.nodes[n].rhs.size()) {
-    /* Multiple RHS? */      
-    foreachc(unordered_set<int>, r, pg.nodes[n].rhs)
-      con_mrhs.push_back(_createNodeVar(p_out_lp, p_out_lprel, p_out_cache, p_out_cu, pg, *r), 1.0);
-  }
-
-  repeat(i, pg.nodes[n].cond_neqs.size()) {
-    con_mrhs.push_back(_createCorefVar(p_out_lp, p_out_lprel, p_out_cache, p_out_cu, pg.nodes[n].cond_neqs[i].first, pg.nodes[n].cond_neqs[i].second, true, opt_level), -1.0);
-    con_mrhs.rhs -= 1.0;
-  }
-
-  if(con_mrhs.vars.size() > 0) {
-    con_mrhs.push_back(v_h, -1.0 * con_mrhs.vars.size());
-    p_out_lp->addConstraint(con_mrhs);
-  }
+  vector<pair<int, int> > unifiables;
     
-  return v_h;
-}
+  /* ENUMERATE UNIFIABLE LITERALS. */
+  V(2) cerr << TS() << "Enumerating unifiable literals..." << endl;
 
-/* and_{1,2,3} <=> h_i ^ h_c1 ^ h_c2 ^ ... ^ h_c3. */
-inline int _createConjVar( linear_programming_problem_t *p_out_lp, lp_problem_mapping_t *p_out_lprel, lp_inference_cache_t *p_out_cache, unordered_map<int, unordered_set<int> > *p_out_cu, const proof_graph_t &pg, int n, int hn ) {
-  return _createNodeVar( p_out_lp, p_out_lprel, p_out_cache, p_out_cu, pg, pg.hypernodes[ hn ][0] );
-  
-  int& v_hn = p_out_lprel->hn2v[hn];
-  if( 0 != v_hn ) return v_hn;
-  
-  char buffer[1024]; sprintf( buffer, "and_%d", hn );
-  v_hn = p_out_lp->addVariable( lp_variable_t( string( buffer ) ) );
-
-  /* and_{1,2,3} <=> h_i ^ h_c1 ^ h_c2 ^ ... ^ h_c3. */
-  lp_constraint_t con( "and", Range, 0, 1 );
-  con.push_back( _createNodeVar( p_out_lp, p_out_lprel, p_out_cache, p_out_cu, pg, n ), 1.0 );
-  repeat( j, pg.hypernodes[ hn ].size() )
-    con.push_back( _createNodeVar( p_out_lp, p_out_lprel, p_out_cache, p_out_cu, pg, pg.hypernodes[ hn ][j] ), 1.0 );
-  con.rhs = 1.0 * con.vars.size() - 1;
-  con.push_back( v_hn, -1.0 * con.vars.size() );
-  p_out_lp->addConstraint( con );
-
-  /* h_c1 ^ h_c2 ^ ... h_cn => h_i */
-  lp_constraint_t con_imp( "imp", LessEqual, 0.0 );
-  repeat( i, pg.hypernodes[ hn ].size() )
-    con_imp.push_back( _createNodeVar( p_out_lp, p_out_lprel, p_out_cache, p_out_cu, pg, pg.hypernodes[ hn ][i] ), 1.0 );
-  con_imp.rhs = 1.0 * con_imp.vars.size() - 1.0;
-  con_imp.push_back( _createNodeVar( p_out_lp, p_out_lprel, p_out_cache, p_out_cu, pg, n ), -1.0 * con_imp.vars.size() );
-  p_out_lp->addConstraint( con_imp );
-  
-  return v_hn;
-}
-
-/* u <=> h_i ^ h_j ^ (forall (x_i=y_i)) */
-inline int _createUniVar(linear_programming_problem_t *p_out_lp, lp_problem_mapping_t *p_out_lprel, lp_inference_cache_t *p_out_cache, unordered_map<int, unordered_set<int> > *p_out_cu, const proof_graph_t &pg, int ni, int nj, const unifier_t &uni, int opt_level = 0) {
-  if( ni > nj ) swap(ni, nj);
-
-  int& v_u = p_out_lprel->nn2uv[ni][nj];
-  if( 0 != v_u ) return v_u;
-
-  v_u = p_out_lp->addVariable( lp_variable_t( "u_" + pg.nodes[ni].toString() + "," + pg.nodes[nj].toString() ) );
+  foreach(pg_node_map_t, iter_p2n, p2n) {
+    if(iter_p2n->first == "=" || iter_p2n->first == "!=") continue;
     
-  /* u <=> h_i ^ h_j ^ (forall (x_i=y_i)) */
-  lp_constraint_t con_u( "", Range, 0, 1 );
-  con_u.push_back( _createNodeVar( p_out_lp, p_out_lprel, p_out_cache, p_out_cu, pg, ni ), 1.0 );
-  con_u.push_back( _createNodeVar( p_out_lp, p_out_lprel, p_out_cache, p_out_cu, pg, nj ), 1.0 );
+    for(unordered_map<int, vector<int> >::iterator iter_pa2n=iter_p2n->second.begin(); iter_p2n->second.end()!=iter_pa2n; ++iter_pa2n) {
+      if(!kb.isUnifiable(iter_p2n->first, iter_pa2n->first)) continue;
+      if(1 == iter_pa2n->second.size()) continue;
+      
+      V(5) cerr << TS() << "Unifiable: " << ::toString("%s/%d", iter_p2n->first.c_str(), iter_pa2n->first) << ": " << iter_pa2n->second.size() << endl;
 
-  for( uint_t k=0; k<uni.substitutions.size(); k++ ) {
-    if( uni.substitutions[k].terms[0] == uni.substitutions[k].terms[1] ) continue;
-
-    /* State the pair (t1,t2) has a possibility to be unified. */
-    store_item_t t1 = uni.substitutions[k].terms[0], t2 = uni.substitutions[k].terms[1];
-    int          v_coref = _createCorefVar(p_out_lp, p_out_lprel, p_out_cache, p_out_cu, t1, t2, true, opt_level);
-    
-    p_out_cache->evc.add( t1, t2 );
-    con_u.push_back(v_coref, 1.0);
-  }
-
-  con_u.rhs = 1.0 * con_u.vars.size() - 1;
-  con_u.push_back( v_u, -1.0 * con_u.vars.size() );
-
-  p_out_lp->addConstraint( con_u );
-
-  return v_u;
-}
-
-/* sc <=> x=y ^ h_i ^ h_j ^ ... ^ h_n */
-inline int _createUnifyCooccurringVar( linear_programming_problem_t *p_out_lp, lp_problem_mapping_t *p_out_lprel, lp_inference_cache_t *p_out_cache, unordered_map<int, unordered_set<int> > *p_out_cu, const proof_graph_t &pg, store_item_t ti, store_item_t tj, const vector<int> &literals ) {
-  int v_sc    = p_out_lp->addVariable( lp_variable_t( "sc_"+ g_store.claim(ti) + "~" + g_store.claim(tj) + "," + "~" ) );
-  int v_coref = _createCorefVar( p_out_lp, p_out_lprel, p_out_cache, p_out_cu, ti, tj, 0 );
-
-  lp_constraint_t con_sc( "sc_sxyhihj"+ g_store.claim(ti) + "~" + g_store.claim(tj) + "," + "~", Range, 0, 1 );
-  repeat( i, literals.size() )
-    con_sc.push_back( _createNodeVar( p_out_lp, p_out_lprel, p_out_cache, p_out_cu, pg, literals[i] ), 1.0 );
-  
-  if( -1 != v_coref ) con_sc.push_back( v_coref, 1.0 );
+      int num_really_unifiable = 0;
+        
+      repeat(i, iter_pa2n->second.size()) {
+        repeatf(j, i+1, iter_pa2n->second.size()) {
+          if(c.isTimeout()) return false;
           
-  con_sc.rhs = 1.0 * con_sc.vars.size() - 1;
-  con_sc.push_back( v_sc, -1.0 * con_sc.vars.size() );
+          int ni = iter_pa2n->second[i], nj = iter_pa2n->second[j];
+          unifier_t uni;
+          hash<string> hashier;
 
-  p_out_lp->addConstraint( con_sc );
-  
-  return v_sc;
+          if(0 < already_ua_produced.count(hashier(::toString("%d,%d", ni, nj))) || 0 < already_ua_produced.count(hashier(::toString("%d,%d", nj, ni))))
+            continue;
+          
+          already_ua_produced.insert(hashier(::toString("%d,%d", ni, nj)));
+          
+          if(!getMGU(&uni, nodes[ni].lit, nodes[nj].lit)) continue;
+          if(has_intersection(nodes[ni].nodes_appeared.begin(), nodes[ni].nodes_appeared.end(),
+                              nodes[nj].nodes_appeared.begin(), nodes[nj].nodes_appeared.end()))
+            continue; /* TWO NODES SHARING IT'S PARENT ARE NOT UNIFIABLE. */
+
+          V(6) cerr << TS() << "Unifiable pair: " << nodes[ni].toString() << "," << nodes[nj].toString() << endl;
+          
+          num_really_unifiable++;
+          unifiables.push_back(make_pair(ni, nj));
+        } }
+
+      V(5) cerr << TS() << "-> " << num_really_unifiable << endl;
+    }
+  }
+
+  /* APPLY THEM. */  
+  V(3) cerr << TS() << "Generating unification assumptions... (1/2)" << endl;
+
+  repeat(i, unifiables.size()) {
+    vector<int> nodes_explaining;
+    nodes_explaining.push_back(unifiables[i].second);
+    
+    unifier_t uni;
+    getMGU(&uni, nodes[unifiables[i].first].lit, nodes[unifiables[i].second].lit);
+
+    char p[1024];
+    strcpy(p, nodes[unifiables[i].first].lit.predicate.c_str());
+
+    if(c.use_only_user_score && nodes[unifiables[i].first].lit.predicate != "mention'") continue;
+    
+    repeat(j, uni.substitutions.size()) {
+      if(c.isTimeout()) return false;
+      if(uni.substitutions[j].terms[0] == uni.substitutions[j].terms[1]) continue;
+      if(!kb.isUnifiable(p, nodes[unifiables[i].first].lit.terms.size(), j)) continue;
+      
+      store_item_t t1=uni.substitutions[j].terms[0], t2=uni.substitutions[j].terms[1]; if(t1 > t2) swap(t1, t2);
+
+      if(t1.isUnknown() && t2.isUnknown()) continue;
+      
+      int node_sub = getSubNode(t1, t2);
+      if(-1 == node_sub) {
+        node_sub = addNode(literal_t("=", t1, t2), HypothesisNode);
+        V(6) cerr << TS() << nodes[unifiables[i].first].toString() << "~" << nodes[unifiables[i].second].toString() << ": " << vc_unifiable.toString() << endl;
+      }
+      
+      nodes_explaining.push_back(node_sub);
+    }
+
+    /* ADD EXPLAIN BY UNIFICATION RELATION. */
+    string pn = nodes[unifiables[i].first].lit.predicate.toString();
+    if(string::npos != pn.find("-"))
+      pn = pn.substr(pn.find("-")+1);
+    
+    pg_hypernode_t hn = addHyperNode(nodes_explaining, true);
+    //addEdge(unifiables[i].first, hn, c.use_only_user_score ? "0": "UNIFY_" + pn);
+    addEdge(unifiables[i].first, hn, "0", 1);
+  }
+
+  V(3) cerr << TS() << "Generating unification assumptions... (2/2)" << endl;
+
+  /* MAKE SURE EQUALITY NODES FOR THE SET OF UNIFIABLE VARIABLES. */
+  for(variable_cluster_t::cluster_t::iterator iter_c2v=vc_unifiable.clusters.begin(); vc_unifiable.clusters.end()!=iter_c2v; ++iter_c2v) {
+    vector<store_item_t> variables( iter_c2v->second.begin(), iter_c2v->second.end() );
+    
+    for( uint_t i=0; i<variables.size(); i++ ) {
+      for( uint_t j=i+1; j<variables.size(); j++ ) {
+        store_item_t t1=variables[i], t2=variables[j]; if(t1 > t2) swap(t1, t2);
+        if(c.isTimeout()) return false;
+        if(t1.isConstant() && t2.isConstant()) continue;
+
+        /* IF THE NODE ISN'T CREATED, THEN GENERATE IT. */
+        int node_sub = getSubNode(t1, t2);
+        if(-1 == node_sub) node_sub = addNode(literal_t("=", t1, t2), HypothesisNode);
+
+        nodes[node_sub].lit.wa_number = 10.0;
+      } }
+  }
+
+  return true;
 }
 
-bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_mapping_t *p_out_lprel, lp_inference_cache_t *p_out_cache, const knowledge_base_t &kb, const proof_graph_t &pg, const variable_cluster_t &evc, inference_configuration_t& c ) {
+void function::initializeWeight(sparse_vector_t *p_w, const string &name, const inference_configuration_t &ic) {
+  if(!ic.no_prior) {
+    if(string::npos != name.find("_EXPLAINED_")) {
+      (*p_w)[name] = 1.0;
+      return;
+    }
+
+    if(string::npos != name.find("_AXIOM_")) {
+      (*p_w)[name] = -1.2;
+      return;
+    }
+  }
+  
+  if(!g_ext.isFunctionDefined("cbInitializeWeight")) {
+    (*p_w)[name] = 0;
+    //(*p_w)[name] = -0.0001 - (0.0001 * ic.i_initializer);
+    return;
+  }
+  
+  mypyobject_t::buyTrashCan();
+
+  external_module_context_t emc = {NULL, NULL, &ic, 0.0, ""};
+  mypyobject_t pycon(PyCapsule_New( (void*)&emc, NULL, NULL));
+  mypyobject_t pyarg(Py_BuildValue("(Os)", pycon.p_pyobj, name.c_str()));
+  mypyobject_t pyret(g_ext.call("cbInitializeWeight", pyarg.p_pyobj));
+
+  if(NULL != pyret.p_pyobj)
+    (*p_w)[name] = PyFloat_AsDouble(pyret.p_pyobj);
+  else
+    (*p_w)[name] = 0.0;
+            
+  mypyobject_t::cleanTrashCan();
+}
+
+bool function::augmentTheLoss(linear_programming_problem_t *p_out_lp, lp_problem_mapping_t *p_out_lprel, lp_inference_cache_t *p_out_cache, const knowledge_base_t &kb, const proof_graph_t &pg, inference_configuration_t& c) {
+  repeat(i, pg.nodes.size()) {
+    if(pg.nodes[i].lit.predicate == "!=") continue;
+    
+    /* IS THIS AN LABEL? */
+    if(c.training_instance.isLabel(pg.nodes[i].lit)) {
+      p_out_lprel->feature_vector[p_out_cache->createNodeVar(i)][PrefixFixedValue + string("LOSS_")] = -1;
+      V(3) cerr << TS() << "Loss is augmented for: " << pg.nodes[i].toString() << endl;
+    }
+  }
+  
+  return true;
+}
+
+bool function::convertToFeatureVector(linear_programming_problem_t *p_out_lp, lp_problem_mapping_t *p_out_lprel, lp_inference_cache_t *p_out_cache, const knowledge_base_t &kb, const proof_graph_t &pg, inference_configuration_t& c) {
   
   /* Start creating factors... */
   p_out_lp->addVariable( lp_variable_t( "dummy" ) );
   
-  sparse_vector_t    v_inf, v_minf; v_inf[ "FIXED" ] = 9999.0; v_minf[ "FIXED" ] = -9999.0;
-  unordered_map<int, unordered_set<int> > constants_unifiables;
+  sparse_vector_t    v_inf, v_minf; v_inf[store_item_t("FIXED")] = 9999.0; v_minf[store_item_t("FIXED")] = -9999.0;
   variable_cluster_t vc_gold;
   unordered_set<int> vars_unification;
 
-  V(1) cerr << TS() << "Processing score function templates..." << endl;
+  /* BASIC COMPONENT. */
+  V(1) cerr << TS() << "Processing basic score function..." << endl;
+
+  unordered_map<int, vector<int> > ncnj, cnjimp;
   
-  if( g_ext.isFunctionDefined( "cbScoreFunction" )  ) {
-    mypyobject_t::buyTrashCan();
-
-    external_module_context_t emc = {&pg, p_out_lprel, &c};
-    mypyobject_t pycon( PyCapsule_New( (void*)&emc, NULL, NULL) );
-    mypyobject_t pyarg( Py_BuildValue("(O)", pycon.p_pyobj) );
-    mypyobject_t pyret( g_ext.call( "cbScoreFunction", pyarg.p_pyobj ) );
-      
-    V(1) cerr << TS() << "Constructing the score function..." << endl;
-
-    if( NULL != pyret.p_pyobj ) {
-        
-      /* [ (["FC_1", "FC_2", ...], "FEATURE_ELEMENT", 1.0), ... ] */
-      unordered_map<string, int> fc_map;
-        
-      repeat( i, PyList_Size(pyret.p_pyobj) ) {
-        if( c.isTimeout() ) return false;
-
-        PyObject        *p_pyfactors     = PyTuple_GetItem(PyList_GetItem(pyret.p_pyobj, i), 0), *p_pyfen = PyTuple_GetItem(PyList_GetItem(pyret.p_pyobj, i), 1), *p_pyfev = PyTuple_GetItem(PyList_GetItem(pyret.p_pyobj, i), 2);
-        string           feature_element_name(PyString_AsString(p_pyfen));
-        sparse_vector_t  ve;
-        vector<string>   signature;
-        factor_t         fc(0 == feature_element_name.find("^") ? AndFactorTrigger : OrFactorTrigger);
-        bool             is_vua_included = false;
-
-        repeat( j, PyList_Size(p_pyfactors) ) {
-          factor_t       fc_cnf(0 == feature_element_name.find("^") ? OrFactorTrigger : AndFactorTrigger);
-          vector<string> local_signature;
-          
-          repeat(k, PyList_Size(PyList_GetItem(p_pyfactors, j))) {
-            char *p_factor_name = PyString_AsString(PyList_GetItem(PyList_GetItem(p_pyfactors, j), k));
-            
-            if( NULL == p_factor_name ) { W( "Factor name is not a string." ); continue; }
-
-            string         fc_name    = p_factor_name;
-            bool           f_negation = false;
-
-            if('!' == fc_name[0]) { f_negation = true; fc_name = fc_name.substr(1); }
-            
-            switch( fc_name[0] ) {
-            case 'p': {
-              int  p_id; sscanf( fc_name.substr(1).c_str(), "%d", &p_id );
-              local_signature.push_back((f_negation?"!":"") + pg.nodes[p_id].toString());
-              fc_cnf.push_back( _createNodeVar(p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg, p_id), !f_negation );
-              break; }
-            case 'c': {
-              char var1[32], var2[32]; sscanf( fc_name.substr(1).c_str(), "%s %s", var1, var2 );
-              int v_coref = _createCorefVar( p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, _VC(var1), _VC(var2) );
-              if( -1 != v_coref ) { fc_cnf.push_back( v_coref, !f_negation ); local_signature.push_back(::toString(f_negation ? "%s!=%s" : "%s=%s", var1, var2)); is_vua_included = true; }
-              break; }
-            default:
-              W( "Unknown factor: " << fc_name );
-            }
-          }
-
-          /* MAKE SURE THAT WE DON'T HAVE OVERLAP. */
-          vector<int>                          sorted_triggers = fc_cnf.triggers; sort(sorted_triggers.begin(), sorted_triggers.end());
-          string                               signature_fc    = "fc_"+::join(local_signature.begin(), local_signature.end(), "/");
-          unordered_map<string, int>::iterator iter_fcm        = fc_map.find(signature_fc);
-          int                                  v_fc            = -1;
-          
-          if(fc_map.end() == iter_fcm) { v_fc = fc_cnf.apply(p_out_lp, signature_fc, false, false); fc_map[signature_fc] = v_fc; }
-          else v_fc        = iter_fcm->second;
-
-          signature.push_back(signature_fc);
-          fc.push_back(v_fc);
-        }
-
-        if(0 == feature_element_name.find("^")) feature_element_name = feature_element_name.substr(1);
-        
-        /* MAKE SURE THAT WE DON'T HAVE OVERLAP. */
-        vector<int>                          sorted_triggers = fc.triggers; sort(sorted_triggers.begin(), sorted_triggers.end());
-        string                               signature_fc    = "ufc_"+::join(signature.begin(), signature.end(), "/");
-        unordered_map<string, int>::iterator iter_fcm        = fc_map.find(signature_fc);
-        int                                  v_fc            = -1;
-        bool                                 f_prohibiting   = -9999 == PyFloat_AsDouble(p_pyfev);
-
-        if( fc_map.end() == iter_fcm ) { v_fc = fc.apply(p_out_lp, signature_fc, f_prohibiting, false); fc_map[signature_fc] = v_fc; }
-        else v_fc         = iter_fcm->second;
-
-        if(is_vua_included && 0 != feature_element_name.find(PrefixFixedWeight)) vars_unification.insert(v_fc);
-        
-        if( f_prohibiting || -1 != v_fc ) {
-          V(5) cerr << TS() << "New factor: " << ::join(signature.begin(), signature.end(), "/") << ":" << PyString_AsString(p_pyfen) << ":" << PyFloat_AsDouble(p_pyfev) << ":w=" << c.p_sfunc->weights[PyString_AsString(p_pyfen)] << ":" << is_vua_included << endl;
-          if(-1 != v_fc) p_out_lp->variables[ v_fc ].name += "/" + string(PyString_AsString(p_pyfen));
-        }
-        if( !f_prohibiting && -1 != v_fc ) { p_out_lprel->feature_vector[ v_fc ][ PyString_AsString(p_pyfen) ] += PyFloat_AsDouble(p_pyfev); }
-
-      }
-
-    }
-      
-    mypyobject_t::cleanTrashCan();
-    
-  }
-  
-  /* Basic component. */
-  V(3) cerr << "." << endl;
-  
-  repeat( i, pg.nodes.size() ) {
+  repeat(i, pg.nodes.size()) {
     if( c.isTimeout() ) return false;
 
-    if(LabelNode == pg.nodes[i].type) _createNodeVar(p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg, i);
+    p_out_cache->createNodeVar(i);
     
-    /* Specal treatment for (in)equality. */
-    if( g_store.isEqual( pg.nodes[i].lit.predicate, PredicateSubstitution ) && ObservableNode == pg.nodes[i].type ) {
-      repeat( j, pg.nodes[i].lit.terms.size() ) {
-        repeatf( k, j+1, pg.nodes[i].lit.terms.size() ) {
-          p_out_lp->variables[ _createCorefVar( p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg.nodes[i].lit.terms[j], pg.nodes[i].lit.terms[k] ) ].fixValue( 1.0 );
-          vc_gold.add( pg.nodes[i].lit.terms[j], pg.nodes[i].lit.terms[k] );
-        } }
-    }
-
-    if(g_store.isEqual( pg.nodes[i].lit.predicate, "!=" )) {
-      repeat( j, pg.nodes[i].lit.terms.size() ) {
-        repeatf( k, j+1, pg.nodes[i].lit.terms.size() ) {
-          if(ObservableNode == pg.nodes[i].type) {
-            
-            p_out_lp->variables[ _createCorefVar( p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg.nodes[i].lit.terms[j], pg.nodes[i].lit.terms[k] ) ].fixValue( 0.0 );
-            V(5) cerr << TS() << "Non-merge: " << _SC(pg.nodes[i].lit.terms[j]) << "," << _SC(pg.nodes[i].lit.terms[k]) << endl;
-            continue;
-          }
-
-          /* Prohibit variables from being unified if this literal is hypothesized. */
-          lp_constraint_t con_pu("", LessEqual, 1.0);
-          con_pu.push_back(_createNodeVar(p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg, i), 1.0);
-          con_pu.push_back(_createCorefVar(p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg.nodes[i].lit.terms[j], pg.nodes[i].lit.terms[k]), 1.0);
-          p_out_lp->addConstraint(con_pu);
-        } }
-    }
-    
-    /* Factor: Implication. */
     pg_edge_set_t::const_iterator iter_eg = pg.edges.find(i);
-    
-    if( pg.edges.end() != iter_eg ) {
-      repeat( j, iter_eg->second.size() ) {
-        lp_constraint_t con_imp("", GreaterEqual, 0);
-        con_imp.push_back(_createConjVar(p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg, i, iter_eg->second[j]), -1.0);
-        con_imp.push_back(_createNodeVar(p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg, i), 1.0);
-        p_out_lp->addConstraint(con_imp);
-      } }
-    
-    /* Factor: Conjunction. */
-    if(ObservableNode != pg.nodes[i].type) {
-      pg_node_hypernode_map_t::const_iterator iter_n2hn = pg.n2hn.find(i);
-      if( pg.n2hn.end() != iter_n2hn ) {
-        repeat(j, iter_n2hn->second.size()) {
-          repeat(k1, pg.hypernodes[iter_n2hn->second[j]].size()) {          
-            repeatf(k2, k1, pg.hypernodes[iter_n2hn->second[j]].size()) {
-              lp_constraint_t con_eq("", Equal, 0);
-              con_eq.push_back(_createNodeVar(p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg, pg.hypernodes[iter_n2hn->second[j]][k1]), 1.0);
-              con_eq.push_back(_createNodeVar(p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg, pg.hypernodes[iter_n2hn->second[j]][k2]), -1.0);
-              p_out_lp->addConstraint(con_eq);
-            } }
-        }
-      }
-    }
-    
-    /* Factor: Not explained or unified. */
-    if(998 == c.depthlimit) {
-      _createNodeVar(p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg, i);
-      continue;
-    }
-
-    continue;
-    
-    factor_t fc_cost(AndFactorTrigger);
-
-    fc_cost.push_back(_createNodeVar(p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg, i), true);
-    
-    /* For explanations. */
     if( pg.edges.end() != iter_eg ) {
       repeat(j, iter_eg->second.size()) {
-        p_out_lp->variables[_createConjVar(p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg, i, iter_eg->second[j])].opt_level = pg.nodes[i].depth+1;
-        fc_cost.push_back(_createConjVar(p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg, i, iter_eg->second[j]), false);
-      }
-    }
-    
-    /* For factoring. */
-    bool  f_to_be_unified = false;
-    const vector<int> *p_out_nodes;
-    pg.getNode(&p_out_nodes, pg.nodes[i].lit.predicate, pg.nodes[i].lit.terms.size());
-    
-    repeat(j, p_out_nodes->size()) {
-      if(!(pg.nodes[i].lit.wa_number > pg.nodes[(*p_out_nodes)[j]].lit.wa_number ||
-           (pg.nodes[i].lit.wa_number == pg.nodes[(*p_out_nodes)[j]].lit.wa_number && i<(*p_out_nodes)[j]))) continue;
-      
-      unifier_t uni;
-      if(!getMGU(&uni, pg.nodes[i].lit, pg.nodes[(*p_out_nodes)[j]].lit)) continue;
+        p_out_cache->createConjVar(iter_eg->second[j]);
 
-      int v_fc_unify = _createUniVar(p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg, i, (*p_out_nodes)[j], uni, max(pg.nodes[i].depth, pg.nodes[(*p_out_nodes)[j]].depth));
-      fc_cost.push_back(v_fc_unify, false);
-
-      p_out_lp->variables[v_fc_unify].opt_level = max(pg.nodes[i].depth, pg.nodes[(*p_out_nodes)[j]].depth);
-      if(ObservableNode == pg.nodes[i].type && ObservableNode == pg.nodes[(*p_out_nodes)[j]].type) {
-        f_to_be_unified |= true;
-        p_out_lp->variables[v_fc_unify].setInitialValue(1.0);
-        repeat(k, uni.substitutions.size()) {
-          int v_coref = _createCorefVar(p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, uni.substitutions[k].terms[0], uni.substitutions[k].terms[1], true);
-          if(-1 == v_coref) continue;
-          
-          p_out_lp->variables[v_coref].setInitialValue(1.0);
+        const vector<int> &hn = pg.hypernodes[iter_eg->second[j]];
+        
+        repeat(k, hn.size()) {
+          /* A NODE BEING TRUE IMPLIES THAT AT LEAST ONE CONJUNCTION
+             IS TRUE. EXCEPT CONJUNCTION FOR UNIFICATION. */
+          //if(HypothesisNode == pg.nodes[hn[k]].type && (pg.nodes[hn[k]].lit.predicate == "=" || !pg.isHyperNodeForUnification(iter_eg->second[j])))
+          //if(string::npos == pg.hypernodeToString(iter_eg->second[j]).find("mention") && (pg.nodes[hn[k]].lit.predicate == "=" || !pg.isHyperNodeForUnification(iter_eg->second[j])))
+          if((pg.nodes[hn[k]].lit.predicate == "=" || !pg.isHyperNodeForUnification(iter_eg->second[j])))
+            ncnj[hn[k]].push_back(iter_eg->second[j]);
         }
-      } else {
-        repeat(k, uni.substitutions.size()) {
-          int v_coref = _createCorefVar(p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, uni.substitutions[k].terms[0], uni.substitutions[k].terms[1], true);
-          if(-1 == v_coref) continue;
-          
-          p_out_lp->variables[v_coref].setInitialValue(0.0);
-        }
-        p_out_lp->variables[v_fc_unify].setInitialValue(0.0);
+
+        /* BEING THE HYPOTHETICAL CONJUNCTION TRUE IMPLIES THAT AT LEAST ONE HEAD NODE IS TRUE. */
+        if(HypothesisNode == pg.nodes[i].type && !pg.isAllObserved(iter_eg->second[j]))
+          cnjimp[iter_eg->second[j]].push_back(i);
       }
-    }
-
-    int v_fc_cost = fc_cost.apply(p_out_lp, "fc_cost_" + pg.nodes[i].toString());
-    p_out_lprel->feature_vector[v_fc_cost]["!COST_" + pg.nodes[i].toString()] = -pg.nodes[i].lit.wa_number;
-
-    if(1 == fc_cost.triggers.size() && ObservableNode == pg.nodes[i].type) p_out_lp->variables[v_fc_cost].fixValue(1.0);
-
-    if(f_to_be_unified) p_out_lp->variables[v_fc_cost].setInitialValue(0.0);
-    else                p_out_lp->variables[v_fc_cost].setInitialValue(1.0);
-    
-    p_out_lp->variables[_createNodeVar(p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg, i)].opt_level = pg.nodes[i].depth;
-    p_out_lp->variables[v_fc_cost].opt_level = pg.nodes[i].depth;
-    //p_out_lp->variables[v_fc_cost].setInitialValue(0.0);
-    
-    //pg_node_hypernode_map_t::const_iterator iter_n2hn = pg.n2hn.find(i);
-    // if( pg.n2hn.end() != iter_n2hn ) {
-
-    //   factor_t fc_conjduty( AndFactorTrigger );
-
-    //   repeat( j, iter_n2hn->second.size() ) {
-    //     int v_hn = _createConjVar( p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg, i, iter_n2hn->second[j] );
-    //     if( 1 == pg.hypernodes[ iter_n2hn->second[j] ].size() ) continue;
-      
-    //     fc_conjduty.push_back( v_hn, false );
-    //   }
-
-    //   if( fc_conjduty.triggers.size() > 0 ) fc_conjduty.push_back( _createNodeVar( p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg, i ) );
-
-    //   fc_conjduty.apply( p_out_lp, "fc_cjd_" + pg.nodes[i].lit.toString(), true );
-    // }
-
-    if(c.prohibited_literals.count(i) > 0) {
-      p_out_lp->variables[_createNodeVar(p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg, i)].fixValue(0.0);
     }
   }
+
+  for(unordered_map<int, vector<int> >::iterator iter_imp=ncnj.begin(); ncnj.end()!=iter_imp; ++iter_imp) {
+    lp_constraint_t con_imp(::toString("imp%d:%s", iter_imp->first, pg.nodes[iter_imp->first].toString().c_str()), LessEqual, 0);
+    
+    sort(iter_imp->second.begin(), iter_imp->second.end());
+    iter_imp->second.erase(unique(iter_imp->second.begin(), iter_imp->second.end()), iter_imp->second.end());
+
+    V(5) cerr << TS() << "CON_IMP: " << pg.nodes[iter_imp->first].toString() << " => ";
+    
+    repeat(i, iter_imp->second.size()) {
+      // if(string::npos != pg.hypernodeToString(iter_imp->second[i]).find("mention"))
+      //   continue;
+      
+      if(!pg.isAllObserved(iter_imp->second[i])) {
+        con_imp.push_back(p_out_cache->createConjVar(iter_imp->second[i]), -1.0);
+        V(5) cerr << pg.hypernodeToString(iter_imp->second[i]) << " " << endl;
+      }
+    }
+
+    //if(0 == con_imp.vars.size()) p_out_lp->variables[p_out_cache->createNodeVar(iter_imp->first)].fixValue(0.0);
+    
+    con_imp.push_back(p_out_cache->createNodeVar(iter_imp->first), 1.0);
+    if(1 < con_imp.vars.size()) p_out_lp->addConstraint(con_imp);
+
+    V(5) cerr << endl;
+  }
+
+  for(unordered_map<int, vector<int> >::iterator iter_imp=cnjimp.begin(); cnjimp.end()!=iter_imp; ++iter_imp) {
+    lp_constraint_t con_imp(::toString("imp%d", iter_imp->first), LessEqual, 0);
+    
+    sort(iter_imp->second.begin(), iter_imp->second.end());
+    iter_imp->second.erase(unique(iter_imp->second.begin(), iter_imp->second.end()), iter_imp->second.end());
+    
+    repeat(i, iter_imp->second.size())      
+      con_imp.push_back(p_out_cache->createNodeVar(iter_imp->second[i]), -1.0);
+    
+    con_imp.push_back(p_out_cache->createConjVar(iter_imp->first), 1.0);
+    if(1 < con_imp.vars.size()) p_out_lp->addConstraint(con_imp);
+  }
   
-  /* Factor: Inconsistent. */
+          // lp_constraint_t con_imp(::toString("imp%d-%d:%s", i, iter_eg->second[j], pg.nodes[i].toString().c_str()), LessEqual, 0);
+          // con_imp.push_back(v_cnj, 1.0);
+          // con_imp.push_back(p_out_cache->createNodeVar(i), -1.0);
+          // p_out_lp->addConstraint(con_imp);
+  
+  /* INCONSISTENT NODES. */
   repeat(i, pg.mutual_exclusive_nodes.size()) {
     if( c.isTimeout() ) return false;
+
+    V(6) cerr << TS() << "MUTUAL EXCLUSIVE: "
+              << pg.nodes[pg.mutual_exclusive_nodes[i].first.first].toString() << ","
+              << pg.nodes[pg.mutual_exclusive_nodes[i].first.second].toString() << endl;
     
-    pg_node_t n1 = pg.nodes[pg.mutual_exclusive_nodes[i].first.first], n2 = pg.nodes[pg.mutual_exclusive_nodes[i].first.second];
-    
-    lp_constraint_t con_m("inc", LessEqual, 1);
-    con_m.push_back(_createNodeVar(p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg, n1.n), 1.0);
-    con_m.push_back(_createNodeVar(p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg, n2.n), 1.0);
-
-    const unifier_t &theta   = pg.mutual_exclusive_nodes[i].second;
-    bool             f_fails = false;
-    
-    repeat(j, theta.substitutions.size()) {
-      if(g_store.isConstant(theta.substitutions[j].terms[0]) && g_store.isConstant(theta.substitutions[j].terms[1]) &&
-         theta.substitutions[j].terms[0] != theta.substitutions[j].terms[1]) { f_fails = true; break; }
-      
-      int v_coref = _createCorefVar(p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, theta.substitutions[j].terms[0], theta.substitutions[j].terms[1]);
-      if(-1 == v_coref) continue;
-
-      con_m.push_back(v_coref, 1.0);
-      con_m.rhs += 1.0;
-    }
-
-    if(f_fails) continue;
-
-    p_out_lp->addConstraint(con_m);
+    p_out_cache->createConsistencyConstraint(pg.mutual_exclusive_nodes[i].first.first,
+                                             pg.mutual_exclusive_nodes[i].first.second,
+                                             pg.mutual_exclusive_nodes[i].second);
   }
 
-  /* Create s variables. */
-  V(3) cerr << ".." << endl;
-  
-  for( variable_cluster_t::cluster_t::iterator iter_c2v=p_out_cache->evc.clusters.begin(); p_out_cache->evc.clusters.end()!=iter_c2v; ++iter_c2v ) {
-      
-    vector<store_item_t> variables( iter_c2v->second.begin(), iter_c2v->second.end() );
-      
-    for( uint_t i=0; i<variables.size(); i++ ) {
-      for( uint_t j=i+1; j<variables.size(); j++ ) {
-        if( c.isTimeout() ) return false;
-        
-        store_item_t ti = variables[i], tj = variables[j];
-        if(0 < vc_gold.variables.count(ti) && 0 < vc_gold.variables.count(tj)) continue;
-        
-        _createCorefVar(p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, ti, tj, true, 0);
-      } }
+  /* DISJOINT AXIOMS. */
+  foreachc(axiom_disjoint_set_t, i, pg.axiom_disjoint_set) {
+    lp_constraint_t con_d(::toString("axdisj_%d", i), LessEqual, 1);
+
+    if(i->second.size() <= 1) continue;
+    
+    foreachc(unordered_set<int>, j, i->second)
+      con_d.push_back(p_out_cache->createConjVar(*j), 1.0);
+
+    p_out_lp->addConstraint(con_d);
   }
+
+  /* BEST-LINK STRATEGY. */
+  // foreachc(proof_graph_t::var2var2node_t, iter_v2v2n, pg.nodes_sub) {
+  //   V(5) cerr << TS() << "BEST-LINK FOR: " << iter_v2v2n->first.toString() << endl;
+
+  //   lp_constraint_t con_bl(::toString("bestlink_%s", iter_v2v2n->first.toString().c_str()), LessEqual, 1);
+    
+  //   foreachc(proof_graph_t::var2node_t, iter_v2n, iter_v2v2n->second)
+  //     con_bl.push_back(p_out_cache->createNodeVar(iter_v2n->second), 1.0);
+
+  //   p_out_lp->addConstraint(con_bl);
+  // }
   
-  if( LabelGiven == c.objfunc ) {
-    repeat( i, pg.labelnodes.size() ) {
-      int n = pg.labelnodes[i];
+  /* USED-DEFINED SCORE FUNCTION. */  
+  V(1) cerr << TS() << "Processing user-defined score function..." << endl;
 
-      if(g_store.isEqual( pg.nodes[n].lit.predicate, "=" )) {
-        repeat( j, pg.nodes[n].lit.terms.size() ) {
-          repeatf( k, j+1, pg.nodes[n].lit.terms.size() ) {
-            int v_coref = _createCorefVar( p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg.nodes[n].lit.terms[j], pg.nodes[n].lit.terms[k], false );
+  struct mycontext_t {
+    lp_inference_cache_t                    *p_out_cache;
+    score_function_t                        *p_out_psfunc;
+    const score_function_t::function_unit_t *p_unit;
+    const inference_configuration_t         *p_ic;
+  } con;
 
-            /* Shouldn't make the variable, because it means that the
-               solution is not in the search space.  */
-            if( -1 == v_coref ) {
-              cerr << TS() << "Not in the candidate hypothesis space: " << _SC(pg.nodes[n].lit.terms[j]) << "=" << _SC(pg.nodes[n].lit.terms[k]) << endl;
-              continue;
-            }
-            
-            vc_gold.add( pg.nodes[n].lit.terms[j], pg.nodes[n].lit.terms[k] );
-          } }
+  struct { static void callback(const vector<int> &stack, void *p_context) {
+    mycontext_t *p_con = (mycontext_t*)p_context;
+    const score_function_t::function_unit_t &unit = *p_con->p_unit;
+    const proof_graph_t &pg = p_con->p_out_cache->pg;
+    string str_lf = unit.lf.toString(), str_feature;
+      
+    /* GOOD BOY! */
+    unifier_t      mgu;
+    bool           f_unification_succeeded = true;
+    vector<string> instances;
+    vector<string> comb;
+    factor_t       fc_cnj(AndFactorTrigger), fc_neg_cnj(AndFactorTrigger);
+    int            lc = 0;
+    
+    foreachc(vector<int>, i, stack) {
+      const string &predicate_name = unit.lf.branches[lc].lit.predicate;
+
+      //if(ObservableNode != pg.nodes[*i].type) {
+        fc_cnj.push_back(p_con->p_out_cache->createNodeVar(*i), '?' != predicate_name[0]);
+        fc_neg_cnj.push_back(p_con->p_out_cache->createNodeVar(*i), predicate_name == "=" ? !('?' != predicate_name[0]) : '?' != predicate_name[0]);
+        // fc_neg_cnj.push_back(p_con->p_out_cache->createNodeVar(predicate_name != "=" ? *i : pg.getNegSubNode(pg.nodes[*i].lit.terms[0], pg.nodes[*i].lit.terms[1])), '?' != predicate_name[0]);
+        //}
+      
+      if(!(f_unification_succeeded = getMGU(&mgu, literal_t(pg.nodes[*i].lit.predicate, unit.lf.branches[lc].lit.terms) , pg.nodes[*i].lit, true))) break;
+      instances.push_back(pg.nodes[*i].lit.toString());
+
+      string str_signature = predicate_name + "(";
+      repeat(j, unit.lf.branches[lc].lit.terms.size()) {
+        if(unit.lf.branches[lc].lit.terms[j] == "_") str_signature += (j > 0 ? ",_" : "_");
+        else                                        str_signature += (j > 0 ? "," : "") + (const string&)pg.nodes[*i].lit.terms[j];
       }
-    }
-  }
-  
-  /* Impose transitivity constraints on variable equality relation. */
-  int num_pair = 0;
-  
-  for( variable_cluster_t::cluster_t::iterator iter_c2v=p_out_cache->evc.clusters.begin(); p_out_cache->evc.clusters.end()!=iter_c2v; ++iter_c2v ) {
-    vector<store_item_t> variables( iter_c2v->second.begin(), iter_c2v->second.end() );
 
-    repeat( i, variables.size() ) {
-      lp_constraint_t con_bestlink( "bl", LessEqual, 1 );
+      str_signature += ")";
+      comb.push_back(str_signature);
       
-      repeatf( j, i+1, variables.size() ) {
-        if( c.isTimeout() ) return false;
-        
-        num_pair++;
-        
-        store_item_t t1 = variables[i], t2 = variables[j]; if( t1 > t2 ) swap(t1, t2);
-        int v_coref = _createCorefVar( p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, t1, t2, false );
-        
-        if(-1 == v_coref) continue;
-        
-        con_bestlink.push_back( v_coref, 1.0 );
-        
-        if(LabelGiven == c.objfunc && 0 < vc_gold.variables.count(t1) && 0 < vc_gold.variables.count(t2)) {
-          if( !vc_gold.isInSameCluster(t1,t2) ) { 
-            p_out_lp->variables[ v_coref ].fixValue(0.0); 
-          } else if( vc_gold.isInSameCluster(t1,t2) ) {
-            p_out_lp->variables[ v_coref ].fixValue(1.0); 
-          }
-        }
-        
-      }
+      lc++;
     }
+      
+    str_feature = (p_con->p_ic->fix_user_weight && 0 != unit.name.find("~") ? "!USER_" : "USER_") +
+      (("?" == unit.name || 0 == unit.name.find("+")) ? /* IF THE NAME IS NOT SPECIFIED, THEN WEIGHTING FOR EACH AXIOM. */
+       unit.name + "_" + str_lf + mgu.toString() : unit.name); /* CONSIDER VARIABLE BINDING FOR EXCLAMATION-MARKED VARIABLES. */
+      
+    /* AVOID DUPLICATING IT. */
+    sort(comb.begin(), comb.end());
+    string str_comb = str_feature + ":" + ::join(comb.begin(), comb.end(), ",");
+      
+    if(0 < p_con->p_out_cache->user_defined_features.count(str_comb)) return;
+    if(!f_unification_succeeded) return;
+
+    p_con->p_out_cache->user_defined_features.insert(str_comb);
+
+    /* FIX THE WEIGHT IF NEEDED. */
+    if(0.0 != unit.weight) {
+      str_feature = "!" + str_feature;
+      p_con->p_out_psfunc->weights[str_feature] = unit.weight;
+    }
+      
+    V(5) cerr << TS() << str_feature << ": " << ::join(instances.begin(), instances.end()) << "/MGU: " << mgu.toString() << endl;
+
+    int v_cnj = fc_cnj.apply(&p_con->p_out_cache->lp, "fc_" + str_comb);
+    if(-1 == v_cnj) return;
+    
+    p_con->p_out_cache->lprel.feature_vector[v_cnj][store_item_t(str_feature)] = 1.0;
+    
+    //p_con->p_out_cache->lprel.feature_vector[v_cnj][store_item_t("AAAA")] = 1;
+  
+    // int v_neg_cnj = fc_neg_cnj.apply(&p_con->p_out_cache->lp, "fc_" + str_comb);
+    // p_con->p_out_cache->lprel.feature_vector[v_neg_cnj][str_feature + "_NEG"] = 1;
+          
+    return;
+  } } cb;
+  
+  repeat(i, c.p_sfunc->units.size()) {
+    if( c.isTimeout() ) return false;
+    V(5) cerr << TS() << "Score function: " << c.p_sfunc->units[i].lf.toString() << endl;
+
+    con.p_ic         = &c;
+    con.p_out_cache  = p_out_cache;
+    con.p_out_psfunc = c.p_sfunc;
+    con.p_unit       = &c.p_sfunc->units[i];
+    
+    _query(cb.callback, (void*)&con, pg, c, c.p_sfunc->units[i]);
   }
 
-  /* Make the factors that include variable unification assumptions relative value. */
-  foreach(unordered_set<int>, iter_vua, vars_unification) {
-    foreach(sparse_vector_t, iter_v, p_out_lprel->feature_vector[*iter_vua]) {
-      if(0 == iter_v->first.find(PrefixFixedWeight)) continue;
-      //iter_v->second /= num_pair;
-    } }
-
-  if( BnB == c.method || LocalSearch == c.method ) {
-    //if(true) {
+  /* SET GOLD CLUSTERING. ASSUME THAT LABELS FOLLOW OPEN WORLD ASSUMPTIONS. */
+  //if(LabelGiven == c.objfunc) p_out_cache->fixGoldClustering();
+  
+  /* TRANSITIVE RELATIONS OVER EQUALITIES. */
+  if(BnB == c.method || LocalSearch == c.method) {
     V(2) cerr << TS() << "enumerateP: Creating transitivity constraints..." << endl;
 
-    for( variable_cluster_t::cluster_t::iterator iter_c2v=p_out_cache->evc.clusters.begin(); p_out_cache->evc.clusters.end()!=iter_c2v; ++iter_c2v ) {
-      
+    for( variable_cluster_t::cluster_t::const_iterator iter_c2v=pg.vc_unifiable.clusters.begin(); pg.vc_unifiable.clusters.end()!=iter_c2v; ++iter_c2v ) {
       vector<store_item_t> variables( iter_c2v->second.begin(), iter_c2v->second.end() );
       
       for( uint_t i=0; i<variables.size(); i++ ) {
         for( uint_t j=i+1; j<variables.size(); j++ ) {
           for( uint_t k=j+1; k<variables.size(); k++ ) {
-            store_item_t ti = variables[i], tj = variables[j], tk = variables[k];
-            int
-              v_titj        = _createCorefVar( p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, ti, tj, false ),
-              v_tjtk        = _createCorefVar( p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, tj, tk, false ),
-              v_titk        = _createCorefVar( p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, ti, tk, false );
-
             if( c.isTimeout() ) return false;
-            if( -1 == v_titj || -1 == v_tjtk || -1 == v_titk ) continue;
-
-            // factor_t fc_trans1(AndFactorTrigger);
-            // fc_trans1.push_back(v_titk, true);
-            // fc_trans1.push_back(v_titj, true);
-            // fc_trans1.push_back(v_tjtk, false);
-            // p_out_lprel->feature_vector[fc_trans1.apply(p_out_lp, "fc_trans1")]["!TR"] = -9999;
-
-            // factor_t fc_trans2(AndFactorTrigger);
-            // fc_trans2.push_back(v_titk, true);
-            // fc_trans2.push_back(v_titj, false);
-            // fc_trans2.push_back(v_tjtk, true);
-            // fc_trans2.apply(p_out_lp, "fc_trans2");
-            // p_out_lprel->feature_vector[fc_trans2.apply(p_out_lp, "fc_trans2")]["!TR"] = -9999;
-
-            // factor_t fc_trans3(AndFactorTrigger);
-            // fc_trans3.push_back(v_titk, false);
-            // fc_trans3.push_back(v_titj, true);
-            // fc_trans3.push_back(v_tjtk, true);
-            // fc_trans3.apply(p_out_lp, "fc_trans3");
-            // p_out_lprel->feature_vector[fc_trans3.apply(p_out_lp, "fc_trans3")]["!TR"] = -9999;
-            
-            lp_constraint_t con_trans1( "trans", GreaterEqual, -1 );
-            con_trans1.push_back( v_titk, 1.0 );
-            con_trans1.push_back( v_titj, -1.0 );
-            con_trans1.push_back( v_tjtk, -1.0 );
-            p_out_lp->addConstraint( con_trans1 );
-
-            lp_constraint_t con_trans2( "trans", GreaterEqual, -1 );
-            con_trans2.push_back( v_titk, -1.0 );
-            con_trans2.push_back( v_titj, 1.0 );
-            con_trans2.push_back( v_tjtk, -1.0 );
-            p_out_lp->addConstraint( con_trans2 );
-
-            lp_constraint_t con_trans3( "trans", GreaterEqual, -1 );
-            con_trans3.push_back( v_titk, -1.0 );
-            con_trans3.push_back( v_titj, -1.0 );
-            con_trans3.push_back( v_tjtk, 1.0 );
-            p_out_lp->addConstraint( con_trans3 );
-        
+            p_out_cache->createTransitivityConstraint(variables[i], variables[j], variables[k]);
           } } }
     }
-    
   }
 
-  /* Set the feature vector. */
-  bool f_initializer = g_ext.isFunctionDefined( "cbInitializeWeight" );
-  
-  for( unordered_map<int, sparse_vector_t>::iterator iter_o2v=p_out_lprel->feature_vector.begin(); p_out_lprel->feature_vector.end() != iter_o2v; ++iter_o2v ) {
-    for( sparse_vector_t::iterator iter_v=iter_o2v->second.begin(); iter_o2v->second.end()   != iter_v; ++iter_v ) {
-      if(0 == iter_v->first.find(PrefixFixedWeight) || 0 == iter_v->first.find(PrefixInvisibleElement)) {
-        p_out_lp->variables[ iter_o2v->first ].obj_val += iter_v->second;
-        
-        if(!c.ignore_weight) { /* Make sure the weight has a value 1. */
-          if(c.f_use_temporal_weights) c.weights[iter_v->first] = 1.0;
-          else                         c.p_sfunc->weights[iter_v->first] = 1.0;
-        }
-      } else {
-        if(0 == c.p_sfunc->weights.count(iter_v->first)) {
-          /* Weight initialization. */
-          if(f_initializer) {
-            mypyobject_t::buyTrashCan();
-
-            external_module_context_t emc = {&pg, NULL, &c};
-            mypyobject_t pycon(PyCapsule_New( (void*)&emc, NULL, NULL));
-            mypyobject_t pyarg(Py_BuildValue("(Os)", pycon.p_pyobj, iter_v->first.c_str()));
-            mypyobject_t pyret(g_ext.call("cbInitializeWeight", pyarg.p_pyobj));
-
-            if(NULL != pyret.p_pyobj)
-              c.p_sfunc->weights[iter_v->first] = PyFloat_AsDouble(pyret.p_pyobj);
-            
-            mypyobject_t::cleanTrashCan();
-          }
-        }
-          
-        p_out_lp->variables[ iter_o2v->first ].obj_val += (c.ignore_weight ? 1.0 : (c.f_use_temporal_weights ? c.weights[ iter_v->first ] : c.p_sfunc->weights[ iter_v->first ])) * iter_v->second;
-      }
-      
-      p_out_lprel->input_vector[ iter_v->first ]+= iter_v->second;
-    }
-  }
-  
-  /* Impose mutual exclusiveness over variable equaility relation. */
-  for( unordered_map<store_item_t, unordered_set<int> >::iterator iter_cm=constants_unifiables.begin(); constants_unifiables.end()!=iter_cm; ++iter_cm ) {
+  /* MULTIPLE VARIABLES CAN BE BOUND TO AT MOST ONE CONSTANT. */
+  for(unordered_map<store_item_t, unordered_set<store_item_t> >::const_iterator iter_cm=pg.constants_sub.begin(); pg.constants_sub.end()!=iter_cm; ++iter_cm) {
     if( 1 == iter_cm->second.size() ) continue;
     
-    V(4) cerr << TS() << "MX: " << g_store.claim(iter_cm->first) << ":";
+    V(4) cerr << TS() << "MX: " << iter_cm->first << ":";
 
     lp_constraint_t con_con( "mxc", LessEqual, 1.0 );
-    
-    foreach( unordered_set<store_item_t>, iter_t, iter_cm->second ) {
-      con_con.push_back( _createCorefVar( p_out_lp, p_out_lprel, p_out_cache, NULL, iter_cm->first, *iter_t ), 1.0 );
-      V(4) cerr << TS() << g_store.claim(*iter_t) << ", ";
+     
+    foreachc(unordered_set<store_item_t>, iter_t, iter_cm->second) {
+      con_con.push_back( p_out_cache->createNodeVar(pg.getSubNode(iter_cm->first, *iter_t)), 1.0 );
+      V(4) cerr << TS() << *iter_t << ", ";
     }
 
     V(4) cerr << endl;
     
     p_out_lp->addConstraint( con_con );
   }
-  
-  return true;
-  
+
 }
 
-void function::adjustLP( linear_programming_problem_t *p_out_lp, lp_problem_mapping_t *p_out_lprel, lp_inference_cache_t *p_out_cache, const knowledge_base_t &kb, const proof_graph_t &pg, const variable_cluster_t &evc, inference_configuration_t& c ) {
+bool function::convertToLP(linear_programming_problem_t *p_out_lp, lp_problem_mapping_t *p_out_lprel, lp_inference_cache_t *p_out_cache, const knowledge_base_t &kb, const proof_graph_t &pg, inference_configuration_t& c) {
+  
+  /* SET OBJECTIVES OF ILP OPTIMIZATION PROBLEM. */
+  V(2) cerr << TS() << "Transforming the feature vector into LP objectives..." << endl;
+  
+  for(unordered_map<int, sparse_vector_t>::iterator iter_o2v=p_out_lprel->feature_vector.begin(); p_out_lprel->feature_vector.end() != iter_o2v; ++iter_o2v) {
+    foreach(sparse_vector_t, iter_v, iter_o2v->second) {
+      if(c.scaling_score_func)
+        iter_v->second *= 100.0 * pg.getNormalizer(); //1000.0 * pg.getNormalizer();
+      
+      if(0 == ((const string&)iter_v->first).find(PrefixInvisibleElement) || 0 == ((const string&)iter_v->first).find(PrefixFixedValue))
+        p_out_lp->variables[iter_o2v->first].obj_val += iter_v->second; /* IGNORE THE WEIGHT. */
+      else {
+        /* IF THE WEIGHT HAS NOT BEEN SET YET, THEN INITIALIZE IT. */
+        if(0 == c.p_sfunc->weights.count(iter_v->first)) {
+          function::initializeWeight(&c.p_sfunc->weights, iter_v->first, c);
+          c.i_initializer += 1;
+        }
 
-  if( LabelGiven == c.objfunc ) {
+        p_out_lp->variables[iter_o2v->first].obj_val +=
+          (c.ignore_weight && 0 != ((const string&)iter_v->first).find(PrefixFixedWeight) ? 1.0 : c.p_sfunc->weights[iter_v->first]) * iter_v->second;
+      }
+      
+      p_out_lprel->input_vector[iter_v->first]+= iter_v->second;
+    } }
 
-    for( uint_t i=0; i<p_out_lprel->v_loss.size(); i++ )
-      if( !p_out_lp->variables[ p_out_lprel->v_loss[i] ].isFixed() ) p_out_lp->variables[ p_out_lprel->v_loss[i] ].fixValue( 0.0 );
-    
-  }
+  /* INTERACTIVE DEBUG MODE (LET'S WHEN IT WILL BE IMPLEMENTED). */
+  
+  return true;
   
 }
 
@@ -1189,25 +1104,27 @@ void function::convertLPToHypothesis( logical_function_t *p_out_h, sparse_vector
   p_out_h->opr = AndOperator;
   p_out_h->branches.clear();
   
+  variable_cluster_t vc;
+
+  /* CREATE LITERALS EXCEPT EQUALITIES. */
   for( uint_t i=0; i<cache.pg.nodes.size(); i++ ) {
+    if(cache.pg.nodes[i].f_removed) continue;
     unordered_map<int, int>::const_iterator iter_v = cache.lprel.n2v.find(i);
     if( cache.lprel.n2v.end() == iter_v ) continue;
+    if( 0.5 > sol.optimized_values[ iter_v->second ] ) continue;
 
-    if( ObservableNode == cache.pg.nodes[i].type && g_store.isEqual( cache.pg.nodes[i].lit.predicate, PredicateSubstitution ) ) continue;
-    if( LabelNode == cache.pg.nodes[i].type ) continue;
-                                          
-    if( 0.5 < sol.optimized_values[ iter_v->second ] )
-      p_out_h->branches.push_back( logical_function_t( cache.pg.nodes[i].lit ) );
-  }
-
-  /* Create equality literals. */
-  variable_cluster_t vc;
-  foreachc( pairwise_vars_t, iter_t1, cache.lprel.pp2v )
-    for( unordered_map<store_item_t, int>::const_iterator iter_t2=iter_t1->second.begin(); iter_t1->second.end()!=iter_t2; ++iter_t2 ) {
-      if( 0.5 < sol.optimized_values[ iter_t2->second ] )
-        vc.add( iter_t1->first, iter_t2->first );
+    if(cache.pg.nodes[i].lit.predicate == PredicateSubstitution) {
+      repeat(j, cache.pg.nodes[i].lit.terms.size()) {
+        repeatf(k, j+1, cache.pg.nodes[i].lit.terms.size()) {
+          vc.add(cache.pg.nodes[i].lit.terms[j], cache.pg.nodes[i].lit.terms[k]);
+        } }
+      continue;
     }
 
+    p_out_h->branches.push_back( logical_function_t( cache.pg.nodes[i].lit ) );
+  }
+
+  /* FOR EQUALITIES. */
   foreach( variable_cluster_t::cluster_t, iter_vc, vc.clusters )
     if( iter_vc->second.size() > 1) {
       literal_t equality( PredicateSubstitution );
@@ -1217,20 +1134,16 @@ void function::convertLPToHypothesis( logical_function_t *p_out_h, sparse_vector
       
       p_out_h->branches.push_back( logical_function_t( equality ) );
     }
-  
+
+  /* CREATE FEATURE VECTOR. */
   if( NULL != p_out_fv ) {
     repeat( i, cache.lp.variables.size() ) {
-      if( 0.5 < sol.optimized_values[i] ) {
-        if( cache.lprel.feature_vector.end() != cache.lprel.feature_vector.find(i) ) {
-          foreachc( sparse_vector_t, iter_fv, cache.lprel.feature_vector.find(i)->second ) {
-            size_t ps = iter_fv->first.find(PrefixInvisibleElement);
-            if(0 == ps || 1 == ps) continue;
-
-            (*p_out_fv)[ iter_fv->first ] += iter_fv->second;
-          }
+      if(0.5 < sol.optimized_values[i]) {
+        if(cache.lprel.feature_vector.end() != cache.lprel.feature_vector.find(i)) {
+          foreachc( sparse_vector_t, iter_fv, cache.lprel.feature_vector.find(i)->second )
+            (*p_out_fv)[iter_fv->first] += iter_fv->second;
         }
       }
-      
     }
   }
   
@@ -1254,103 +1167,6 @@ void function::sample( vector<double> *p_out_array, const sampling_method_t m ) 
     
 }
 
-bool function::compileKB( knowledge_base_t *p_out_kb, const precompiled_kb_t &pckb ) {
-
-  unordered_map<string, string> pa2axioms;
-
-  p_out_kb->keys.clear();
-  p_out_kb->axioms.clear();
-  
-  for( precompiled_kb_t::const_iterator iter_p = pckb.begin(); pckb.end() != iter_p; ++iter_p )
-    for( unordered_map<int, vector<string> >::const_iterator iter_a = iter_p->second.begin(); iter_p->second.end() != iter_a; ++iter_a ) {
-      char buffer[ 1024 ];
-      sprintf( buffer, "%s/%d", g_store.claim( iter_p->first ).c_str(), iter_a->first );
-      p_out_kb->keys.push_back( string(buffer) );
-
-      for( uint_t i=0; i<iter_a->second.size(); i++ )
-        pa2axioms[ string(buffer) ] += (0 != i ? "\t" : "") + iter_a->second[i];
-    }
-
-  /* Sort it! */
-  V(5) cerr << TS() << "compileKB: Sorting the hash keys..." << endl;
-  
-  sort( p_out_kb->keys.begin(), p_out_kb->keys.end() );
-
-  /* Prepare the key-index pairs for DARTS. */
-  vector<const char*> da_keys;
-  vector<int>         da_vals;
-  
-  for( uint_t i=0; i<p_out_kb->keys.size(); i++ ) {    
-    da_keys.push_back( p_out_kb->keys[i].c_str() ); da_vals.push_back( i );
-    p_out_kb->axioms.push_back( pa2axioms[ p_out_kb->keys[i] ] );
-  }
-
-  p_out_kb->da.clear();
-  
-  /* Write the hash table. */
-  if( 0 != p_out_kb->da.build( da_keys.size(), &da_keys[0], 0, &da_vals[0] ) ) return false;
-
-  return true;
-  
-}
-
-bool function::writePrecompiledKB( precompiled_kb_t &pckb, const string &filename ) {
-
-  knowledge_base_t kb;
-  compileKB( &kb, pckb );
-
-  /* Write all the axioms at once. */
-  ofstream ofs( filename.c_str(), ios::binary );
-  int      size = kb.axioms.size();
-  ofs.write( (char*)&size, sizeof(int) );
-  
-  for( uint_t i=0; i<kb.axioms.size(); i++ ) {
-    size = kb.axioms[i].size();
-    ofs.write( (char *)&size, sizeof(int) );
-    ofs.write( (char *)kb.axioms[i].c_str(), size );
-  }
-  
-  ofs.close();
-  
-  /* Write the hash table. */
-  if( 0 != kb.da.save( filename.c_str(), "ab" ) ) return false;
-  
-  return true;
-  
-}
-
-bool function::readPrecompiledKB( knowledge_base_t *p_out_kb, const string &filename ) {
-  
-  ifstream ifs_pckb( filename.c_str(), ios::binary );
-  if( !ifs_pckb.is_open() ) return false;
-  
-  /* Read the header. */
-  V(1) cerr << TS() << "readPrecompiledKB: Loading header..." << endl;
-  
-  int num_axioms, size_header = 0;
-  ifs_pckb.read( (char *)&num_axioms, sizeof(int) );
-  size_header += sizeof(int);
-
-  for( int i=0; i<num_axioms; i++ ) {
-    int axiom_length;
-    ifs_pckb.read( (char *)&axiom_length, sizeof(int) );
-
-    char buffer[ 1024*1000 ];
-    ifs_pckb.read( (char *)buffer, axiom_length ); buffer[ axiom_length ] = 0;
-    p_out_kb->axioms.push_back( string(buffer) );
-    
-    size_header += sizeof(int) + axiom_length;
-  }
-
-  ifs_pckb.close();
-
-  /* Read the hash table. */
-  if( 0 != p_out_kb->da.open( filename.c_str(), "rb", size_header ) ) return false;
-
-  return true;
-
-}
-
 void function::getParsedOption( command_option_t *p_out_opt, vector<string> *p_out_args, const string &acceptable, int argc, char **argv ) {
   
   int              option;
@@ -1368,9 +1184,9 @@ void function::getParsedOption( command_option_t *p_out_opt, vector<string> *p_o
 
 store_item_t _findRepr( unordered_set<store_item_t> vars ) {
   foreach( unordered_set<store_item_t>, iter_v, vars )
-    if( g_store.isConstant( *iter_v ) ) return *iter_v;
+    if(iter_v->isConstant()) return *iter_v;
   foreach( unordered_set<store_item_t>, iter_v, vars )
-    if( !g_store.isUnknown( *iter_v ) ) return *iter_v;
+    if(!iter_v->isUnknown()) return *iter_v;
   return *vars.begin();
 }
 
@@ -1384,50 +1200,16 @@ void proof_graph_t::printGraph( const lp_solution_t &sol, const linear_programmi
     unordered_map<int, int>::const_iterator iter_v = lprel.n2v.find(i);
     if( lprel.n2v.end() == iter_v ) continue;
     
-    (*p_out) << "<literal id=\""<< i <<"\" type=\""<< nodes[i].type <<"\" active=\""<< (sol.optimized_values[iter_v->second] < 0.5 ? "no" : "yes") <<"\">"
-         << nodes[i].toString() << "</literal>" << endl;
-
-    const vector<int> *p_unifiables;
-    getNode( &p_unifiables, nodes[i].lit.predicate, nodes[i].lit.terms.size() );
-
-    repeat( j, p_unifiables->size() ) {
-      uint_t nj = (*p_unifiables)[j];
-
-      if(g_store.isEqual(nodes[i].lit.predicate, "!=")) continue;
-      if( i == nj ) continue;
-      if(nodes[nj].f_removed) continue;
-      
-      unordered_map<int, int>::const_iterator iter_vj = lprel.n2v.find(nj);
-      if( lprel.n2v.end() == iter_vj ) continue;
-
-      vector<string> subs;
-      unifier_t uni;
-      if( !getMGU( &uni, nodes[i].lit, nodes[nj].lit ) ) continue;
-
-      bool f_fails     = false;
-      int  num_unified = 0;
-      
-      repeat( k, uni.substitutions.size() ) {
-        store_item_t t1 = uni.substitutions[k].terms[0], t2 = uni.substitutions[k].terms[1]; if( t1 > t2 ) swap(t1, t2);
-        int v_sxy = _getCorefVar(t1, t2, lprel);
-
-        if( t1 == t2 ) continue;
-        if( -1 == v_sxy ) { f_fails = true; continue; }
-        if( sol.optimized_values[ v_sxy ] < 0.5 ) { f_fails = true; } else { num_unified++; subs.push_back( toString("%s=%s", g_store.claim(t1).c_str(), g_store.claim(t2).c_str()) ); }
-      }
-
-      f_fails |= sol.optimized_values[ iter_v->second ] < 0.5;
-      f_fails |= sol.optimized_values[ iter_vj->second ] < 0.5;
-
-      (*p_out) << "<unification l1=\""<< i <<"\" l2=\""<< nj << "\" unifier=\""<< ::join(subs.begin(), subs.end(), ", ")
-               << "\" active=\""<< ((/*num_unified >= 1 || */!f_fails) ? "yes" : "no") << "\" />" << endl;
-    }
+    (*p_out) << ::toString("<literal id=\"%d\" type=\"%d\" depth=\"%d\" active=\"%s\">",
+                           i, nodes[i].type, nodes[i].depth, (sol.optimized_values[iter_v->second] < 0.5 ? "no" : "yes"))
+             << _sanitize(nodes[i].toString()) << "</literal>" << endl;
   }
   
   for( pg_edge_set_t::const_iterator iter_eg = edges.begin(); edges.end() != iter_eg; ++iter_eg ) {
     unordered_map<int, int>::const_iterator iter_v = lprel.n2v.find( iter_eg->first );
-    if( lprel.n2v.end() == iter_v ) continue;
-
+    if(lprel.n2v.end() == iter_v) continue;
+    if(nodes[iter_eg->first].f_removed) continue;
+    
     for( uint_t i=0; i<iter_eg->second.size(); i++ ) {
 
       bool   f_removed = false;
@@ -1436,21 +1218,34 @@ void proof_graph_t::printGraph( const lp_solution_t &sol, const linear_programmi
       for( uint_t j=0; j<hypernodes[ iter_eg->second[i] ].size(); j++ ) {
         unordered_map<int, int>::const_iterator iter_vt = lprel.n2v.find( hypernodes[ iter_eg->second[i] ][j] );
         if(lprel.n2v.end() == iter_vt) continue;
-        if(nodes[hypernodes[ iter_eg->second[i] ][j]].f_removed) { f_removed = true; continue; }
+        if(nodes[hypernodes[ iter_eg->second[i] ][j]].f_removed) { f_removed = true; break; }
         if(0.5 < sol.optimized_values[ iter_vt->second ]) n_active++;
       }
 
       if(f_removed) continue;
 
-      (*p_out) << "<explanation name=\""<< edges_name.find(iter_eg->second[i])->second <<"\" active=\""<< (0.5 < sol.optimized_values[ iter_v->second ] && hypernodes[ iter_eg->second[i] ].size() == n_active ? "yes" : "no") <<"\" axiom=\"\">";
-      
-      for( uint_t j=0; j<hypernodes[ iter_eg->second[i] ].size(); j++ ) {
-        (*p_out) << hypernodes[ iter_eg->second[i] ][j];
-        if( j < hypernodes[ iter_eg->second[i] ].size()-1 ) (*p_out) << " ^ ";
-      }
+      if(isHyperNodeForUnification(iter_eg->second[i])) {
+        vector<string> subs;
+        
+        repeat(j, hypernodes[iter_eg->second[i]].size()) {
+          if(nodes[hypernodes[iter_eg->second[i]][j]].lit.predicate != PredicateSubstitution) continue;
+          subs.push_back((const string&)nodes[hypernodes[iter_eg->second[i]][j]].lit.terms[0] + "=" + (const string&)nodes[hypernodes[iter_eg->second[i]][j]].lit.terms[1]);
+        }
+        
+        (*p_out) << ::toString("<unification l1=\"%d\" l2=\"%d\" unifier=\"%s\" active=\"%s\" />",
+                               hypernodes[iter_eg->second[i]][0], iter_eg->first, ::join(subs.begin(), subs.end(), ", ").c_str(),
+                               0.5 < sol.optimized_values[iter_v->second] && n_active == hypernodes[iter_eg->second[i]].size() ? "yes" : "no") << endl;
 
-      (*p_out) << " => " << iter_eg->first << "</explanation>" << endl;
+      } else {
+        (*p_out) << "<explanation name=\""<< edges_name.find(iter_eg->second[i])->second <<"\" active=\""<< (0.5 < sol.optimized_values[ iter_v->second ] && hypernodes[ iter_eg->second[i] ].size() == n_active ? "yes" : "no") <<"\" axiom=\"\">";
       
+        for( uint_t j=0; j<hypernodes[ iter_eg->second[i] ].size(); j++ ) {
+          (*p_out) << hypernodes[ iter_eg->second[i] ][j];
+          if( j < hypernodes[ iter_eg->second[i] ].size()-1 ) (*p_out) << " ^ ";
+        }
+
+        (*p_out) << " => " << iter_eg->first << "</explanation>" << endl;
+      }      
     }
         
   }
@@ -1465,13 +1260,13 @@ sexp_reader_t &sexp_reader_t::operator++() {
   bool f_comment = false;
   char last_c    = 0;
   
-  while( m_stream.good() ) {
-
+  while(m_stream.good()) {
     char c = m_stream.get();
 
+    read_bytes = m_stream.tellg();
     if( '\n' == c ) n_line++;
     
-    if( '\\' != last_c && ';' == c ) { f_comment = true; continue; }
+    if( StringStack != m_stack.back()->type && '\\' != last_c && ';' == c ) { f_comment = true; continue; }
     if( f_comment ) {
       if( '\n' == c ) f_comment = false;
       continue;
@@ -1480,7 +1275,10 @@ sexp_reader_t &sexp_reader_t::operator++() {
     switch( m_stack.back()->type ) {
     
     case ListStack: {
-      if( '(' == c ) { m_stack.push_back( new_stack( sexp_stack_t(ListStack) ) ); }
+      if( '(' == c ) {
+        /* IF IT WERE TOP STACK, THEN CLEAR. */
+        if(1 == m_stack.size()) clearStack();
+        m_stack.push_back( new_stack( sexp_stack_t(ListStack) ) ); }
       else if( ')' == c ) {
         _A( m_stack.size() >= 2, "Syntax error at " << n_line << ": too many parentheses." << endl << m_stack.back()->toString() );
         m_stack[ m_stack.size()-2 ]->children.push_back( m_stack.back() ); m_stack.pop_back();
@@ -1490,7 +1288,7 @@ sexp_reader_t &sexp_reader_t::operator++() {
         stack = *m_stack.back()->children.back();
         return *this;
       } else if( '"' == c ) m_stack.push_back( new_stack( sexp_stack_t(StringStack) ) );
-      else   if( '\'' == c ) m_stack.push_back( new_stack( sexp_stack_t(TupleStack, "quote", m_stack_list) ) );
+      //else   if( '\'' == c ) m_stack.push_back( new_stack( sexp_stack_t(TupleStack, "quote", m_stack_list) ) );
       else if( isSexpSep(c) ) break;
       else m_stack.push_back( new_stack( sexp_stack_t(TupleStack, string(1, c), m_stack_list) ) );
       break; }
@@ -1502,7 +1300,7 @@ sexp_reader_t &sexp_reader_t::operator++() {
           m_stack[ m_stack.size()-2 ]->children.push_back( m_stack.back() ); m_stack.pop_back();
         }
       } else if( '\\' == c ) m_stack.back()->str += m_stream.get();
-      else if( ';' != c ) m_stack.back()->str += c;
+      else m_stack.back()->str += c;
       break; }
 
     case TupleStack: {
@@ -1519,10 +1317,179 @@ sexp_reader_t &sexp_reader_t::operator++() {
     }
 
     last_c = c;
-    
   }
 
+  clearStack();
+    
   return *this;
-  
 }
 
+
+
+
+
+
+/*
+   GGG  RRRRRR   AA    VV     VV  EEEEEEEE
+  G   G R    R  A  A    VV   VV   EE
+  G     RRRRRR  AAAA    VV   VV   EEEEEEEE
+  G  GG RRR    A    A    VV VV    EE
+   G  G R  RR  A    A     V V     EE
+    GGG R    R A    A      V      EEEEEEEE
+*/
+  
+bool _processFeatureFunction(linear_programming_problem_t *p_out_lp, lp_problem_mapping_t *p_out_lprel, lp_inference_cache_t *p_out_cache, const mypyobject_t &pyret, const inference_configuration_t &c, const proof_graph_t &pg) {
+  
+  /* [ (["FC_1", "FC_2", ...], "FEATURE_ELEMENT", 1.0), ... ] */
+  unordered_map<string, int> fc_map;
+      
+  repeat( i, PyList_Size(pyret.p_pyobj) ) {
+    if( c.isTimeout() ) return false;
+
+    PyObject        *p_pyfactors     = PyTuple_GetItem(PyList_GetItem(pyret.p_pyobj, i), 0), *p_pyfen = PyTuple_GetItem(PyList_GetItem(pyret.p_pyobj, i), 1), *p_pyfev = PyTuple_GetItem(PyList_GetItem(pyret.p_pyobj, i), 2);
+    string           feature_element_name(PyString_AsString(p_pyfen));
+    sparse_vector_t  ve;
+    vector<string>   signature;
+    factor_t         fc(0 == feature_element_name.find("^") ? AndFactorTrigger : OrFactorTrigger);
+    bool             is_vua_included = false;
+
+    repeat( j, PyList_Size(p_pyfactors) ) {
+      factor_t       fc_cnf(0 == feature_element_name.find("^") ? OrFactorTrigger : AndFactorTrigger);
+      vector<string> local_signature;
+          
+      repeat(k, PyList_Size(PyList_GetItem(p_pyfactors, j))) {
+        char *p_factor_name = PyString_AsString(PyList_GetItem(PyList_GetItem(p_pyfactors, j), k));
+            
+        if( NULL == p_factor_name ) { W( "Factor name is not a string." ); continue; }
+
+        string         fc_name    = p_factor_name;
+        bool           f_negation = false;
+
+        if('!' == fc_name[0]) { f_negation = true; fc_name = fc_name.substr(1); }
+            
+        switch( fc_name[0] ) {
+        case 'p': {
+          int  p_id; sscanf( fc_name.substr(1).c_str(), "%d", &p_id );
+          local_signature.push_back((f_negation?"!":"") + pg.nodes[p_id].toString());
+          fc_cnf.push_back( p_out_cache->createNodeVar(p_id), !f_negation );
+          break; }
+        case 'c': {
+          char var1[32], var2[32]; sscanf( fc_name.substr(1).c_str(), "%s %s", var1, var2 );
+          int v_coref = p_out_cache->createNodeVar(pg.getSubNode(store_item_t(var1), store_item_t(var2)) );
+          if( -1 != v_coref ) { fc_cnf.push_back( v_coref, !f_negation ); local_signature.push_back(::toString(f_negation ? "%s!=%s" : "%s=%s", var1, var2)); is_vua_included = true; }
+          break; }
+        default:
+          W( "Unknown factor: " << fc_name );
+        }
+      }
+
+      /* MAKE SURE THAT WE DON'T HAVE OVERLAP. */
+      vector<int>                          sorted_triggers = fc_cnf.triggers; sort(sorted_triggers.begin(), sorted_triggers.end());
+      string                               signature_fc    = "fc_"+::join(local_signature.begin(), local_signature.end(), "/");
+      unordered_map<string, int>::iterator iter_fcm        = fc_map.find(signature_fc);
+      int                                  v_fc            = -1;
+          
+      if(fc_map.end() == iter_fcm) { v_fc = fc_cnf.apply(p_out_lp, signature_fc, false, false); fc_map[signature_fc] = v_fc; }
+      else v_fc        = iter_fcm->second;
+
+      signature.push_back(signature_fc);
+      fc.push_back(v_fc);
+    }
+
+    if(0 == feature_element_name.find("^")) feature_element_name = feature_element_name.substr(1);
+        
+    /* MAKE SURE THAT WE DON'T HAVE OVERLAP. */
+    vector<int>                          sorted_triggers = fc.triggers; sort(sorted_triggers.begin(), sorted_triggers.end());
+    string                               signature_fc    = "ufc_"+::join(signature.begin(), signature.end(), "/");
+    unordered_map<string, int>::iterator iter_fcm        = fc_map.find(signature_fc);
+    int                                  v_fc            = -1;
+    bool                                 f_prohibiting   = -9999 == PyFloat_AsDouble(p_pyfev);
+
+    if( fc_map.end() == iter_fcm ) { v_fc = fc.apply(p_out_lp, signature_fc, f_prohibiting, false); fc_map[signature_fc] = v_fc; }
+    else v_fc         = iter_fcm->second;
+
+    //if(is_vua_included && 0 != feature_element_name.find(PrefixFixedWeight)) vars_unification.insert(v_fc);
+        
+    if( f_prohibiting || -1 != v_fc ) {
+      V(5) cerr << TS() << "New factor: " << ::join(signature.begin(), signature.end(), "/") << ":" << PyString_AsString(p_pyfen) << ":" << PyFloat_AsDouble(p_pyfev) << ":w=" << c.p_sfunc->weights[store_item_t(PyString_AsString(p_pyfen))] << ":" << is_vua_included << endl;
+      if(-1 != v_fc) p_out_lp->variables[ v_fc ].name += "/" + string(PyString_AsString(p_pyfen));
+    }
+    if( !f_prohibiting && -1 != v_fc ) { p_out_lprel->feature_vector[ v_fc ][ store_item_t(PyString_AsString(p_pyfen)) ] += PyFloat_AsDouble(p_pyfev); }
+
+  }
+}
+
+int _createFeatureFunction(linear_programming_problem_t *p_out_lp, lp_problem_mapping_t *p_out_lprel, lp_inference_cache_t *p_out_cache, const proof_graph_t &pg, const logical_function_t &lf, const vector<int> &node_mapping, int *p_out_literal_no) {
+  if(AndOperator == lf.opr || OrOperator == lf.opr) {
+    factor_t fc_opr(OrOperator == lf.opr ? OrFactorTrigger : AndFactorTrigger);
+    
+    repeat(i, lf.branches.size()) {
+      int v_active = _createFeatureFunction(p_out_lp, p_out_lprel, p_out_cache, pg, lf.branches[i], node_mapping, p_out_literal_no);
+      fc_opr.push_back(v_active);
+    }
+    
+    int v_opr = fc_opr.apply(p_out_lp, "fc_");
+    return v_opr;
+  } else if(Literal == lf.opr) {
+    if(-1 == node_mapping[*p_out_literal_no]) {
+      (*p_out_literal_no)++;
+      return 0;
+    }
+    
+    int v_lit = p_out_cache->createNodeVar(node_mapping[*p_out_literal_no]);
+    (*p_out_literal_no)++;
+    return v_lit;
+  }
+  
+  return -1;
+}
+
+
+      /* Switch off all the feature condition constraints. */
+      // repeat(i, p_out_cache->lp.constraints.size()) {
+      //   lp_constraint_t &con = p_out_cache->lp.constraints[i];
+      //   if(string::npos != con.name.find("fc_")) {
+      //     if(0.0 == p_out_cache->lp.variables[con.vars[con.vars.size()-1]].obj_val) continue;
+          
+      //     con.is_active = false;
+      //     p_out_cache->lp.variables[con.vars[con.vars.size()-1]].fixValue(0.0);
+      //   }
+      // }
+
+      // while(true) {
+      //   function::solveLP_BnB(&p_out_cache->lp, &p_out_cache->lprel, c, p_out_cache);
+
+      //   int num_added = 0;
+        
+      //   repeat(i, p_out_cache->lp.constraints.size()) {
+      //     lp_constraint_t &con = p_out_cache->lp.constraints[i];
+      //     if(con.is_active || 0 != con.name.find("fc_cost_")) continue;
+
+      //     cerr << con.toString(p_out_cache->lp.variables) << endl;
+          
+      //     /* Is this not maximally satisfied? */
+      //     p_out_cache->lp.variables[con.vars[con.vars.size()-1]].optimized = 1.0;
+      //     double score      = p_out_cache->lp.variables[con.vars[con.vars.size()-1]].obj_val;
+      //     bool   f_satisfied = con.isSatisfied(p_out_cache->lp.variables), f_add = false;
+
+      //     f_add = (score > 0 && !f_satisfied) || (score < 0 && f_satisfied);
+
+      //     if(f_add) {
+      //       con.is_active = true; num_added++;
+      //       p_out_cache->lp.variables[con.vars[con.vars.size()-1]].fixValue(InvalidFixedValue);
+      //     }
+          
+      //     p_out_cache->lp.variables[con.vars[con.vars.size()-1]].optimized = 0.0;
+      //   }
+
+      //   repeat(i, p_out_cache->lp.variables.size())
+      //     p_out_cache->lp.variables[i].setInitialValue(p_out_cache->lp.variables[i].optimized);
+        
+      //   V(3) cerr << "CPI: " << num_added << " features were added." << endl;
+        
+      //   if(0 == num_added) break;
+
+      //   //p_out_cache->lp.cutoff = p_out_cache->lp.optimized_obj-1.0;
+      // }
+      
+      // break;

@@ -1,11 +1,16 @@
 
-OBJS=src/algorithm.o src/function.o src/ilp.o
+OBJS=src/algorithm.o src/function.o src/ilp.o src/knowledge_base.o
 
 CC=g++
-LDFLAGS=-lpython2.7 -lsqlite3 -lpcre -lpcrecpp
+LDFLAGS=-lpython2.7 -lsqlite3 -lpcre -lpcrecpp -lcdb
+
+ifneq ($(shell grep -E '^\#define USE_OMP' src/defs.h),)
+LDFLAGS+=-fopenmp
+CFLAGS+=-fopenmp
+endif
 
 ifneq ($(shell grep -E '^\#define USE_GUROBI' src/defs.h),)
-LDFLAGS+=-lgurobi_c++ -lgurobi50 -lpthread
+LDFLAGS+=-lgurobi_c++ -lgurobi55 -lpthread
 endif
 
 ifneq ($(shell grep -E '^\#define USE_LOCALSOLVER' src/defs.h),)

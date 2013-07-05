@@ -169,453 +169,6 @@ inline int _getCorefVar( store_item_t t1, store_item_t t2, const lp_problem_mapp
   return k1->second.end() == k2 ? -1 : k2->second;
 }
 
-void algorithm::kbestMIRA(sparse_vector_t *p_out_new, sparse_vector_t *p_out_diff, unordered_set<store_item_t> *p_out_fi, const sparse_vector_t &fv_gold, const vector<pair<sparse_vector_t*, double> > &wrong_best, const learn_configuration_t &c, double normer_gold, double normer_wrong) {
-  GRBEnv   env;
-  GRBModel model(env);
-
-  function::getVectorIndices(p_out_fi, fv_gold);
-
-  repeat(i, wrong_best.size())
-    function::getVectorIndices(p_out_fi, *wrong_best[i].first);
-  
-  /* IF K=1, THE CLOSED FORM SOLUTION IS AVAILABLE. */
-  //if(1 == wrong_best.size()) {
-  if(false) {
-    const sparse_vector_t &fv_current = *wrong_best[0].first;
-    double                 loss       = wrong_best[0].second;
-    double                 s_current  = score_function_t::getScore(*p_out_new, fv_current),
-                           s_gold     = score_function_t::getScore(*p_out_new, fv_gold);
-    double                 numerator  = s_current - s_gold + loss, denominator = 0.0;
-        
-    foreach(unordered_set<store_item_t>, iter_fi, *p_out_fi) {
-      denominator += pow(get_value(fv_gold, *iter_fi, 0.0) - get_value(fv_current, *iter_fi, 0.0), 2);
-    }
-
-    double tau, TauTolerance = c.E * 0.1;
-    if(TauTolerance > fabs(numerator))   numerator = numerator >= 0 ? TauTolerance : -TauTolerance;
-        
-    if(0.0 == denominator) tau = 0.0;
-    else                   tau = min( c.C, numerator / denominator );
-
-    foreach(unordered_set<store_item_t>, iter_fi, *p_out_fi) {
-      if(0 == iter_fi->toString().find(PrefixInvisibleElement) || 0 == iter_fi->toString().find(PrefixFixedWeight))
-        continue;
-      
-      double diff = get_value(fv_gold, *iter_fi, 0.0) - get_value(fv_current, *iter_fi, 0.0);
-      (*p_out_new)[*iter_fi] += tau * diff;
-      (*p_out_diff)[*iter_fi] += tau * diff;
-    }
-
-    return;
-  }
-  
-  GRBQuadExpr                  expr_obj;
-  unordered_map<string,GRBVar> new_weights;
-  GRBVar                       var_epsilon = model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS);
-
-  function::getVectorIndices(p_out_fi, *p_out_new);
-  
-  /* Create the objective function. */
-  foreach(unordered_set<store_item_t>, iter_fe, *p_out_fi) {
-    if(0 == iter_fe->toString().find(PrefixInvisibleElement)) continue;
-    if(0 == iter_fe->toString().find(PrefixFixedValue)) continue;
-    
-    new_weights[*iter_fe] = model.addVar(-GRB_INFINITY, GRB_INFINITY, 0.0, GRB_CONTINUOUS);
-    expr_obj += new_weights[*iter_fe]*new_weights[*iter_fe];
-    expr_obj += -2.0 * new_weights[*iter_fe] * get_value(*p_out_new, *iter_fe, 0.0);
-  }
-
-  expr_obj += c.C * var_epsilon;
-
-  GRBEXECUTE(model.update());
-  GRBEXECUTE(model.setObjective(expr_obj));
-
-  /* IMPOSE MARGIN CONSTRAINT. */
-  GRBEXECUTE(model.addConstr(var_epsilon >= 0));
-  
-  repeat(i, wrong_best.size()) {
-    GRBLinExpr expr_lhs;
-    
-    foreach(unordered_set<store_item_t>, iter_fe, *p_out_fi) {
-      if(0 == iter_fe->toString().find(PrefixInvisibleElement)) continue;
-      if(0 == iter_fe->toString().find(PrefixFixedValue)) 
-        expr_lhs += get_value(fv_gold, *iter_fe, 0.0) - get_value(*wrong_best[i].first, *iter_fe, 0.0);
-      else
-        expr_lhs += new_weights[*iter_fe]*get_value(fv_gold, *iter_fe, 0.0) - new_weights[*iter_fe]*get_value(*wrong_best[i].first, *iter_fe, 0.0);
-    }
-
-    GRBEXECUTE(model.addConstr(expr_lhs + var_epsilon >= wrong_best[i].second));
-  }
-
-  /* FIX THE WEIGHT THAT HAS "!" AS THE BEGINNING OF THE NAME.*/
-  foreach(unordered_set<store_item_t>, iter_fe, *p_out_fi) {
-    if(0 == iter_fe->toString().find(PrefixInvisibleElement)) continue;
-    if(0 == iter_fe->toString().find(PrefixFixedValue)) continue;
-    if(0 == iter_fe->toString().find(PrefixFixedWeight))
-      GRBEXECUTE(model.addConstr(new_weights[*iter_fe] == (double)(*p_out_new)[*iter_fe]));
-
-    // if(string::npos != iter_fe->toString().find("EXPLAINED"))
-    //   GRBEXECUTE(model.addConstr(new_weights[*iter_fe] >= 0.0));
-    
-    // if(string::npos != iter_fe->toString().find("AXIOM"))
-    //   GRBEXECUTE(model.addConstr(new_weights[*iter_fe] <= 0.0));
-  }
-  
-  GRBEXECUTE(model.set( GRB_IntAttr_ModelSense, GRB_MINIMIZE));
-  GRBEXECUTE(model.optimize());
-
-  foreach(unordered_set<store_item_t>, iter_fe, *p_out_fi) {
-    if(0 == iter_fe->toString().find(PrefixInvisibleElement)) continue;
-    if(0 == iter_fe->toString().find(PrefixFixedValue)) continue;
-    if(0 == new_weights.count(*iter_fe)) continue;
-    
-    double new_weight = 0.0;
-    GRBEXECUTE(new_weight = new_weights[*iter_fe].get(GRB_DoubleAttr_X));
-    (*p_out_diff)[*iter_fe] = new_weight - (*p_out_new)[*iter_fe];
-    (*p_out_new)[*iter_fe]  = new_weight;
-  }
-}
-
-int lp_inference_cache_t::createNodeVar(int n, bool f_brand_new) {
-  if(-1 == n) return -1;
-  
-  int& v_h = lprel.n2v[n];
-  
-  if( 0 != v_h ) return v_h;
-  if(!f_brand_new) return -1;
-  
-  v_h = lp.addVariable(lp_variable_t( "h_" + pg.nodes[n].toString() ));
-
-  lp_constraint_t con_mrhs("mrhs", GreaterEqual, 0);
-
-  if(ObservableNode == pg.nodes[n].type || LabelNode == pg.nodes[n].type) {
-    if(LabelNode == pg.nodes[n].type) {
-      V(5) cerr << TS() << " Fxied (label): " << pg.nodes[n].toString() << endl;
-    }
-
-    if(ObservableNode == pg.nodes[n].type)
-      lp.variables[v_h].fixValue( 1.0 );
-    else {
-      lprel.feature_vector[v_h][PrefixInvisibleElement + string("REWARD4LABEL_") + pg.nodes[n].toString()] = 9999.0;
-      V(1) cerr << TS() << "Rewarded: " << pg.nodes[n].toString() << endl;
-    }
-    
-  } else if(2 <= pg.nodes[n].rhs.size()) {
-    /* Multiple RHS? */      
-    foreachc(unordered_set<int>, r, pg.nodes[n].rhs)
-      con_mrhs.push_back(createNodeVar(*r), 1.0);
-  }
-
-  repeat(i, pg.nodes[n].cond_neqs.size()) {
-    con_mrhs.push_back(createNodeVar(pg.getSubNode(pg.nodes[n].cond_neqs[i].first, pg.nodes[n].cond_neqs[i].second)), -1.0);
-    con_mrhs.rhs -= 1.0;
-  }
-
-  if(con_mrhs.vars.size() > 0) {
-    con_mrhs.push_back(v_h, -1.0 * con_mrhs.vars.size());
-    //p_out_lp->addConstraint(con_mrhs);
-  }
-
-  /* FEATURE: EXPLAINED. */
-  factor_t fc_explained(OrFactorTrigger);
-  
-  pg_edge_set_t::const_iterator iter_eg = pg.edges.find(n);
-  if( pg.edges.end() != iter_eg ) {
-    repeat(j, iter_eg->second.size()) {
-      //if(!pg.isHyperNodeForUnification(iter_eg->second[j])) continue;
-      int v_cnj = createConjVar(iter_eg->second[j]);
-      fc_explained.push_back(v_cnj, 1.0);
-    }
-  }
-  
-  if(LabelNode == pg.nodes[n].type || (!ci.use_only_user_score && !ci.no_explained)) {
-    if(pg.nodes[n].lit.predicate != "mention'") {
-      //cerr << pg.nodes[n].toString() << endl;
-      
-      string str_feature = (string)(LabelNode == pg.nodes[n].type ? PrefixInvisibleElement : "") +
-        "BUILTIN_EXPLAINED_" + kb.getExplainedFeatureGroup(pg.nodes[n].lit.toPredicateArity());
-
-      if(0 < pg.nodes[n].depth) str_feature += "_INFERRED_BY_" + pg.nodes[n].instantiated_by.axiom;
-      
-      int v_fc_explained = LabelNode == pg.nodes[n].type && pg.nodes[n].lit.predicate == "=" ? v_h : fc_explained.apply(&lp, "fc_" + str_feature);
-      
-      if(-1 != v_fc_explained) {
-        lprel.feature_vector[v_fc_explained][str_feature] = LabelNode == pg.nodes[n].type ? 9999.0 : 1.0;
-        lp_constraint_t con_imp("", LessEqual, 0);
-        con_imp.push_back(v_fc_explained, 1);
-        con_imp.push_back(v_h, -1);
-        lp.addConstraint(con_imp);
-      }
-      
-      /* COMBINATION EATURE. */
-      if( pg.edges.end() != iter_eg ) {
-        repeat(j, iter_eg->second.size()) {
-          if(!pg.isHyperNodeForUnification(iter_eg->second[j])) continue;
-        
-          factor_t fc_explained_comb(OrFactorTrigger);
-          int v_cnj = createConjVar(iter_eg->second[j]);
-          fc_explained_comb.push_back(v_cnj, 1.0);
-
-          str_feature = (string)(LabelNode == pg.nodes[n].type ? PrefixInvisibleElement : "") +
-            "!BUILTIN_UNI_COMB_" + kb.getExplainedFeatureGroup(pg.nodes[n].lit.toPredicateArity());
-
-          if(0 < pg.nodes[n].depth) str_feature += "_INFERRED_BY_" + pg.nodes[n].instantiated_by.axiom;
-          //else continue;
-          
-          if(0 < pg.nodes[pg.hypernodes[iter_eg->second[j]][0]].depth) str_feature += "_INFERRED_BY_" + pg.nodes[pg.hypernodes[iter_eg->second[j]][0]].instantiated_by.axiom;
-          //else continue;
-
-          v_fc_explained = LabelNode == pg.nodes[n].type && pg.nodes[n].lit.predicate == "=" ? v_h : fc_explained_comb.apply(&lp, "fc_" + str_feature);
-      
-          if(-1 != v_fc_explained)
-            lprel.feature_vector[v_fc_explained][str_feature] = 1;
-        
-        }
-      }
-      //(double)pg.nodes.size()); //
-    }
-  }
-  
-  // lprel.feature_vector[v_h][store_item_t("PRIOR_" + pg.nodes[n].lit.toPredicateArity())] =
-  //   1.0 / mymax(1, (double)(pg.nodes.size()*pg.nodes.size()));
-  // if(pg.nodes[n].lit.predicate == "=")
-  //   lprel.feature_vector[v_h][store_item_t("UNIFY_PRIOR_EQ")] = 10.0 / mymax(1, (double)(pg.vc_unifiable.variables.size()*pg.vc_unifiable.variables.size()));
-    //lprel.feature_vector[v_h][store_item_t("!UNIFY_PRIOR")] = 10.0 / mymax(1, (double)(pg.vc_unifiable.variables.size()*pg.vc_unifiable.variables.size()));
-  
-  if(pg.nodes[n].f_prohibited)
-    lp.variables[v_h].fixValue(0.0);
-
-  int partner = -1;
-  
-  if(pg.nodes[n].lit.predicate == "=" ) {
-    if(-1 != (partner = pg.getNegSubNode(pg.nodes[n].lit.terms[0], pg.nodes[n].lit.terms[1]))) {
-      lp_constraint_t con_mx(::toString("inc%d", n), LessEqual, 1.0);
-      con_mx.push_back(v_h, 1.0);
-      con_mx.push_back(createNodeVar(partner), 1.0);
-      lp.addConstraint(con_mx);
-    }
-  } else if(pg.nodes[n].lit.predicate == "!=" ) {
-    if(-1 != (partner = pg.getSubNode(pg.nodes[n].lit.terms[0], pg.nodes[n].lit.terms[1]))) {
-      lp_constraint_t con_mx(::toString("inc%d", n), LessEqual, 1.0);
-      con_mx.push_back(v_h, 1.0);
-      con_mx.push_back(createNodeVar(partner), 1.0);
-      lp.addConstraint(con_mx);
-    }
-  }
-  
-  return v_h;
-}
-
-/* and_{1,2,3} <=> h_i ^ h_c1 ^ h_c2 ^ ... ^ h_c3. */
-int lp_inference_cache_t::createConjVar(int hn) {
-  int& v_hn = lprel.hn2v[hn];
-  
-  if( 0 != v_hn )
-    return v_hn;
-  
-  char buffer[1024]; sprintf( buffer, "and_%d", hn );
-  v_hn = lp.addVariable( lp_variable_t( string( buffer ) ) );
-
-  /* and_{1,2,3} <=> h_i ^ h_c1 ^ h_c2 ^ ... ^ h_c3. */
-  lp_constraint_t con(::toString("and_%d", hn), Range, 0, 1 );
-  repeat( j, pg.hypernodes[hn].size() )
-    con.push_back(createNodeVar(pg.hypernodes[hn][j]), 1.0 );
-  con.rhs = 1.0 * con.vars.size() - 1;
-  con.push_back(v_hn, -1.0 * con.vars.size());
-  lp.addConstraint(con);
-
-  /* THIS NODE NEEDS TO PAY IF THIS CONJUNCTION IS TRUE. */
-  if(0 < pg.edges_name.count(hn)) {
-    const string &edge_name = pg.edges_name.find(hn)->second;    
-    if("0" != edge_name && !ci.use_only_user_score) {
-      string str_cute_name = "BUILTIN_AXIOM_" + ("?" == edge_name ?
-                                           ::toString("%s", pg.edges_axiom.find(hn)->second.c_str()) :
-                                           edge_name);
-      
-      // factor_t fc_axiom(AndFactorTrigger);
-      // fc_axiom.push_back(v_hn);
-            
-      // int v_axiom = fc_axiom.apply(&lp, "fc_" + str_cute_name);
-      // if(-1 != v_axiom)
-      //lprel.feature_vector[v_hn][str_cute_name] = pg.nodes[pg.hypernodes[hn][0]].lit.wa_number;
-      lprel.feature_vector[v_hn][str_cute_name] = 1 * pg.hypernodes[hn].size() * pg.edges_rhs[hn];
-      
-      repeat(k, pg.hypernodes[hn].size()) {
-        // string str_cute_name = "BUILTIN_" + ("?" == edge_name ?
-        //                                      ::toString("AXIOM_%d_AT_%s", k, pg.edges_axiom.find(hn)->second.c_str()) :
-        //                                      edge_name);
-        // factor_t fc_axiom(AndFactorTrigger);
-        // fc_axiom.push_back(v_hn);
-            
-        // int v_axiom = fc_axiom.apply(&lp, str_cute_name);
-        // lprel.feature_vector[v_axiom][str_cute_name] = pg.nodes[pg.hypernodes[hn][k]].lit.wa_number;
-
-        /* GIVE SOME SCORE FOR EXPLAINING MULTIPLE THINGS TOGETHER. */
-        // if(pg.nodes[pg.hypernodes[hn][k]].lit.predicate == "=" || pg.nodes[pg.hypernodes[hn][k]].lit.predicate == "!=")
-        //   continue;
-        
-        // string str_cute_name = "BUILTIN_INFORMATIVE_" + pg.nodes[pg.hypernodes[hn][k]].lit.toPredicateArity();
-
-        // int v_info = fc_axiom.apply(&lp, str_cute_name);
-        // lprel.feature_vector[v_info][str_cute_name] += 1;
-      }
-    }
-  }
-  
-  return v_hn;
-}
-
-int lp_inference_cache_t::createConsistencyConstraint(int _n1, int _n2, const unifier_t &theta) {
-  if(_n1 > _n2) swap(_n1, _n2);
-
-  static hash<string> hashier;
-  size_t id = hashier(::toString("%d:%d:%s", _n1, _n2, theta.toString().c_str()));
-
-  if(0 < mx_produced.count(id)) return -1;
-  mx_produced.insert(id);
-  
-  pg_node_t &n1 = pg.nodes[_n1], &n2 = pg.nodes[_n2];
-  
-  lp_constraint_t con_m(::toString("inc%d-%d", n1.n, n2.n), LessEqual, 1);
-  con_m.push_back(createNodeVar(n1.n), 1.0);
-  con_m.push_back(createNodeVar(n2.n), 1.0);
-
-  bool             f_fails = false;
-    
-  repeat(j, theta.substitutions.size()) {
-    if(theta.substitutions[j].terms[0].isConstant() && theta.substitutions[j].terms[1].isConstant() &&
-       theta.substitutions[j].terms[0] != theta.substitutions[j].terms[1]) { f_fails = true; break; }
-      
-    int v_coref = createNodeVar(pg.getSubNode(theta.substitutions[j].terms[0], theta.substitutions[j].terms[1]));
-    if(-1 == v_coref) { f_fails=true; break; }
-
-    con_m.push_back(v_coref, 1.0);
-    con_m.rhs += 1.0;
-  }
-
-  if(f_fails) return -1;
-
-  return lp.addConstraint(con_m);
-}
-
-int lp_inference_cache_t::createTransitivityConstraint(const store_item_t &ti, const store_item_t &tj, const store_item_t &tk) {
-  int
-    v_titj = createNodeVar(pg.getSubNode(ti, tj)),
-    v_tjtk = createNodeVar(pg.getSubNode(tj, tk)),
-    v_titk = createNodeVar(pg.getSubNode(ti, tk));
-
-  if( -1 == v_titj || -1 == v_tjtk || -1 == v_titk ) return -1;
-
-  vector<size_t> items; items.push_back(ti.getHash()); items.push_back(tj.getHash()); items.push_back(tk.getHash());
-  sort(items.begin(), items.end());
-
-  static hash<string> hashier;
-  size_t id = hashier(::join(items.begin(), items.end(), "%d", ":"));
-
-  if(0 < tc_produced.count(id)) return -1;
-  tc_produced.insert(id);
-  
-  lp_constraint_t con_trans1(::toString("trans%d", lp.constraints.size()), GreaterEqual, -1 );
-  con_trans1.push_back( v_titk, 1.0 );
-  con_trans1.push_back( v_titj, -1.0 );
-  con_trans1.push_back( v_tjtk, -1.0 );
-  lp.addConstraint( con_trans1 );
-
-  lp_constraint_t con_trans2(::toString("trans%d", lp.constraints.size()), GreaterEqual, -1 );
-  con_trans2.push_back( v_titk, -1.0 );
-  con_trans2.push_back( v_titj, 1.0 );
-  con_trans2.push_back( v_tjtk, -1.0 );
-  lp.addConstraint( con_trans2 );
-
-  lp_constraint_t con_trans3(::toString("trans%d", lp.constraints.size()), GreaterEqual, -1 );
-  con_trans3.push_back( v_titk, -1.0 );
-  con_trans3.push_back( v_titj, -1.0 );
-  con_trans3.push_back( v_tjtk, 1.0 );
-  lp.addConstraint( con_trans3 );
-
-  return 1;
-}
-
-void lp_inference_cache_t::fixGoldClustering() {
-  unordered_set<store_item_t> variables;
-  variable_cluster_t          vc_gold;
-
-  /* FIRST WE IDENTIFY THE CLUSTER IN THE CASE THAT USER MAY SPECIFY CONFLICTED CLUSTER. */
-  repeat(i, pg.labelnodes.size()) {
-    int  n    = pg.labelnodes[i];
-    bool f_eq = pg.nodes[n].lit.predicate == "=",
-      f_ineq  = pg.nodes[n].lit.predicate == "!=";
-
-    if(f_eq || f_ineq) {
-      repeat( j, pg.nodes[n].lit.terms.size() ) {
-        repeatf( k, j+1, pg.nodes[n].lit.terms.size() ) {
-          variables.insert(pg.nodes[n].lit.terms[j]);
-          variables.insert(pg.nodes[n].lit.terms[k]);
-
-          if(f_eq) {
-            int n_node = pg.getSubNode(pg.nodes[i].lit.terms[j], pg.nodes[i].lit.terms[k]);
-            if(-1 == n_node) {
-              cerr << TS() << "Not in search space:" << pg.nodes[i].lit.terms[j] << "," << pg.nodes[i].lit.terms[k] << endl;
-              continue;
-            }
-
-            int partner = pg.getNegSubNode(pg.nodes[i].lit.terms[j], pg.nodes[i].lit.terms[k]);
-
-            if(-1 != partner) {
-              if(ObservableNode == pg.nodes[partner].type || LabelNode == pg.nodes[partner].type) {
-                W("Inconsistent: " << pg.nodes[i].toString());
-                continue;
-              }
-            }
-            
-            lp.variables[createNodeVar(n_node)].fixValue(1);
-          }
-          
-          if(f_eq) vc_gold.add(pg.nodes[n].lit.terms[j], pg.nodes[n].lit.terms[k]);
-        } }
-    }
-  }
-
-  repeat(i, pg.nodes.size()) {
-    if(pg.nodes[i].lit.predicate != "=") continue;
-
-    if(!vc_gold.isInSameCluster(pg.nodes[i].lit.terms[0], pg.nodes[i].lit.terms[1])) {
-      int v_coref = createNodeVar(pg.getSubNode(pg.nodes[i].lit.terms[0], pg.nodes[i].lit.terms[1]));
-      if(-1 == v_coref) continue;
-
-      int partner = pg.getSubNode(pg.nodes[i].lit.terms[0], pg.nodes[i].lit.terms[1]);
-
-      if(-1 != partner) {
-        if(ObservableNode == pg.nodes[partner].type || LabelNode == pg.nodes[partner].type) {
-          W("Inconsistent: " << pg.nodes[i].toString());
-          continue;
-        }
-      }
-      
-      lp.variables[v_coref].fixValue(0);
-    }
-  }
-  
-  // vector<store_item_t> ordered_variables(variables.begin(), variables.end());
-  
-  // repeat(i, ordered_variables.size()) {
-  //   repeatf(j, i+1, ordered_variables.size()) {
-  //     bool f_eq = vc_gold.isInSameCluster(ordered_variables[i], ordered_variables[j]);
-      
-  //     int v_coref = createNodeVar(f_eq ? pg.getSubNode(ordered_variables[i], ordered_variables[j]) : pg.getNegSubNode(ordered_variables[i], ordered_variables[j]));
-
-  //     /* Shouldn't make the variable, because it means that the
-  //        solution is not in the search space.  */      
-  //     if( -1 == v_coref ) {
-  //       cerr << TS() << "Not in the candidate hypothesis space: " << ordered_variables[i] << (f_eq ? "=" : "!=") << ordered_variables[j] << endl;
-  //       continue;
-  //     }
-      
-  //     V(5) cerr << TS() << "Fix: " << ordered_variables[i] << (f_eq ? "=" : "!=") << ordered_variables[j] << endl;
-  //     lp.variables[v_coref].fixValue(1);
-  //   } }
-  
-}
 
 ilp_solution_type_t function::solveLP_BnB(vector<lp_solution_t> *p_out_sols, const linear_programming_problem_t &lp, const lp_problem_mapping_t &lprel, const inference_configuration_t &c, lp_inference_cache_t *p_out_cache ) {
 
@@ -677,10 +230,15 @@ ilp_solution_type_t function::solveLP_BnB(vector<lp_solution_t> *p_out_sols, con
       repeat( j, con.vars.size() ) sosv.push_back( var_map[ con.vars[j] ] );
       p_model->addSOS( &sosv[0], &con.coes[0], sosv.size(), SOS1 == con.opr ? GRB_SOS_TYPE1 : GRB_SOS_TYPE2 );
       break; }
-    case Equal: {        p_model->addConstr( expr_lin, GRB_EQUAL, con.lhs, con.name.substr(0, 32) );         break; }
-    case LessEqual: {    p_model->addConstr( expr_lin, GRB_LESS_EQUAL, con.rhs, con.name.substr(0, 32) );    break; }
-    case GreaterEqual: { p_model->addConstr( expr_lin, GRB_GREATER_EQUAL, con.rhs, con.name.substr(0, 32) ); break; }
-    case Range: {        p_model->addRange( expr_lin, con.lhs, con.rhs, con.name.substr(0, 32) );            break; }
+    case Equal: {        p_model->addConstr( expr_lin, GRB_EQUAL, con.lhs, con.name.substr(0, con.name.length()) );         break; }
+    case LessEqual: {    p_model->addConstr( expr_lin, GRB_LESS_EQUAL, con.rhs, con.name.substr(0, con.name.length()) );    break; }
+    case GreaterEqual: { p_model->addConstr( expr_lin, GRB_GREATER_EQUAL, con.rhs, con.name.substr(0, con.name.length()) ); break; }
+    case Range: {
+      if(con.lhs == con.rhs)
+        p_model->addConstr( expr_lin, GRB_EQUAL, con.lhs, con.name.substr(0, con.name.length()) );
+      else
+        p_model->addRange( expr_lin, con.lhs, con.rhs, con.name.substr(0, con.name.length()) );
+      break; }
     default:             cerr << TS() << "SolveLP_BnB: Unknown constraint type." << endl;
     }, lp.constraints[i].toString( lp.variables )
                   );
@@ -693,7 +251,7 @@ ilp_solution_type_t function::solveLP_BnB(vector<lp_solution_t> *p_out_sols, con
   GRBEXECUTE(p_model->getEnv().set( GRB_IntParam_OutputFlag, c.isOutput(OutputInfoILPlog) ? 1 : 0 );
              p_model->getEnv().set( GRB_DoubleParam_TimeLimit, c.timelimit );
              p_model->getEnv().set( GRB_IntParam_Threads, c.nbthreads );
-             //p_model->getEnv().set( GRB_IntParam_MIPFocus, 2 );
+             //p_model->getEnv().set( GRB_IntParam_MIPFocus, 3 );
              );
 
   if( InvalidCutoff != lp.cutoff ) p_model->getEnv().set( GRB_DoubleParam_Cutoff, lp.cutoff );
@@ -709,8 +267,24 @@ ilp_solution_type_t function::solveLP_BnB(vector<lp_solution_t> *p_out_sols, con
   
   g_p_model = p_model;
   
-  if( CuttingPlaneBnB == c.method ) {
+  if( LazyBnB == c.method ) {
+    signal( SIGINT, _cb_stop_ilp );
+    GRBEXECUTE_OR_DIE(p_model->optimize(), NotAvailable);
+    signal( SIGINT, catch_int );
 
+    if(0 != p_model->get(GRB_IntAttr_SolCount)) {
+      lp_solution_t sol(lp);
+
+      repeat( j, lp.variables.size() )
+        sol.optimized_values[j] = var_map[j].get(GRB_DoubleAttr_X);
+
+      sol.optimized_obj = p_model->get(GRB_DoubleAttr_ObjVal);
+      sol.sol_type      = GRB_OPTIMAL == p_model->get(GRB_IntAttr_Status) ? Optimal : SubOptimal;
+      f_got_solution    = true;
+
+      p_out_sols->push_back(sol);
+    }
+  } else if( CuttingPlaneBnB == c.method ) {
     if( string::npos != c.output_info.find("GAP") ) {
       signal( SIGINT, _cb_stop_ilp );
       GRBEXECUTE_OR_DIE(p_model->optimize(), NotAvailable);
@@ -993,7 +567,467 @@ ilp_solution_type_t function::solveLP_BnB(vector<lp_solution_t> *p_out_sols, con
 
 #endif /* #ifdef GUROBI */
 
+void algorithm::kbestMIRA(sparse_vector_t *p_out_new, sparse_vector_t *p_out_diff, unordered_set<store_item_t> *p_out_fi, const sparse_vector_t &fv_gold, const vector<pair<sparse_vector_t*, double> > &wrong_best, const learn_configuration_t &c, double normer_gold, double normer_wrong) {
+  function::getVectorIndices(p_out_fi, fv_gold);
 
+  repeat(i, wrong_best.size())
+    function::getVectorIndices(p_out_fi, *wrong_best[i].first);
+
+  /* IF K=1, THE CLOSED FORM SOLUTION IS AVAILABLE. */
+  //if(1 == wrong_best.size()) {
+  if(false) {
+    const sparse_vector_t &fv_current = *wrong_best[0].first;
+    double                 loss       = wrong_best[0].second;
+    double                 s_current  = score_function_t::getScore(*p_out_new, fv_current),
+                           s_gold     = score_function_t::getScore(*p_out_new, fv_gold);
+    double                 numerator  = s_current - s_gold + loss, denominator = 0.0;
+
+    foreach(unordered_set<store_item_t>, iter_fi, *p_out_fi) {
+      denominator += pow(get_value(fv_gold, *iter_fi, 0.0) - get_value(fv_current, *iter_fi, 0.0), 2);
+    }
+
+    double tau, TauTolerance = c.E * 0.1;
+    if(TauTolerance > fabs(numerator))   numerator = numerator >= 0 ? TauTolerance : -TauTolerance;
+
+    if(0.0 == denominator) tau = 0.0;
+    else                   tau = min( c.C, numerator / denominator );
+
+    foreach(unordered_set<store_item_t>, iter_fi, *p_out_fi) {
+      if(0 == iter_fi->toString().find(PrefixInvisibleElement) || 0 == iter_fi->toString().find(PrefixFixedWeight))
+        continue;
+
+      double diff = get_value(fv_gold, *iter_fi, 0.0) - get_value(fv_current, *iter_fi, 0.0);
+      (*p_out_new)[*iter_fi] += tau * diff;
+      (*p_out_diff)[*iter_fi] += tau * diff;
+    }
+
+    return;
+  }
+
+#ifdef USE_GUROBI
+  GRBEnv   env;
+  GRBModel model(env);
+
+  GRBQuadExpr                  expr_obj;
+  unordered_map<string,GRBVar> new_weights;
+  GRBVar                       var_epsilon = model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS);
+
+  function::getVectorIndices(p_out_fi, *p_out_new);
+
+  /* Create the objective function. */
+  foreach(unordered_set<store_item_t>, iter_fe, *p_out_fi) {
+    if(0 == iter_fe->toString().find(PrefixInvisibleElement)) continue;
+    if(0 == iter_fe->toString().find(PrefixFixedValue)) continue;
+
+    new_weights[*iter_fe] = model.addVar(-GRB_INFINITY, GRB_INFINITY, 0.0, GRB_CONTINUOUS);
+    expr_obj += new_weights[*iter_fe]*new_weights[*iter_fe];
+    expr_obj += -2.0 * new_weights[*iter_fe] * get_value(*p_out_new, *iter_fe, 0.0);
+  }
+
+  expr_obj += c.C * var_epsilon;
+
+  GRBEXECUTE(model.update());
+  GRBEXECUTE(model.setObjective(expr_obj));
+
+  /* IMPOSE MARGIN CONSTRAINT. */
+  GRBEXECUTE(model.addConstr(var_epsilon >= 0));
+
+  repeat(i, wrong_best.size()) {
+    GRBLinExpr expr_lhs;
+
+    foreach(unordered_set<store_item_t>, iter_fe, *p_out_fi) {
+      if(0 == iter_fe->toString().find(PrefixInvisibleElement)) continue;
+      if(0 == iter_fe->toString().find(PrefixFixedValue))
+        expr_lhs += get_value(fv_gold, *iter_fe, 0.0) - get_value(*wrong_best[i].first, *iter_fe, 0.0);
+      else
+        expr_lhs += new_weights[*iter_fe]*get_value(fv_gold, *iter_fe, 0.0) - new_weights[*iter_fe]*get_value(*wrong_best[i].first, *iter_fe, 0.0);
+    }
+
+    GRBEXECUTE(model.addConstr(expr_lhs + var_epsilon >= wrong_best[i].second));
+  }
+
+  /* FIX THE WEIGHT THAT HAS "!" AS THE BEGINNING OF THE NAME.*/
+  foreach(unordered_set<store_item_t>, iter_fe, *p_out_fi) {
+    if(0 == iter_fe->toString().find(PrefixInvisibleElement)) continue;
+    if(0 == iter_fe->toString().find(PrefixFixedValue)) continue;
+    if(0 == iter_fe->toString().find(PrefixFixedWeight))
+      GRBEXECUTE(model.addConstr(new_weights[*iter_fe] == (double)(*p_out_new)[*iter_fe]));
+
+    // if(string::npos != iter_fe->toString().find("EXPLAINED"))
+    //   GRBEXECUTE(model.addConstr(new_weights[*iter_fe] >= 0.0));
+
+    // if(string::npos != iter_fe->toString().find("AXIOM"))
+    //   GRBEXECUTE(model.addConstr(new_weights[*iter_fe] <= 0.0));
+  }
+
+  GRBEXECUTE(model.set( GRB_IntAttr_ModelSense, GRB_MINIMIZE));
+  GRBEXECUTE(model.optimize());
+
+  foreach(unordered_set<store_item_t>, iter_fe, *p_out_fi) {
+    if(0 == iter_fe->toString().find(PrefixInvisibleElement)) continue;
+    if(0 == iter_fe->toString().find(PrefixFixedValue)) continue;
+    if(0 == new_weights.count(*iter_fe)) continue;
+
+    double new_weight = 0.0;
+    GRBEXECUTE(new_weight = new_weights[*iter_fe].get(GRB_DoubleAttr_X));
+    (*p_out_diff)[*iter_fe] = new_weight - (*p_out_new)[*iter_fe];
+    (*p_out_new)[*iter_fe]  = new_weight;
+  }
+#endif
+
+}
+
+int lp_inference_cache_t::createNodeVar(int n, bool f_brand_new) {
+  if(-1 == n) return -1;
+
+  int& v_h = lprel.n2v[n];
+
+  if( 0 != v_h ) return v_h;
+  if(!f_brand_new) return -1;
+
+  v_h = lp.addVariable(lp_variable_t( "h_" + pg.nodes[n].toString() ));
+
+  lp_constraint_t con_mrhs("mrhs", GreaterEqual, 0);
+
+  if(ObservableNode == pg.nodes[n].type || LabelNode == pg.nodes[n].type) {
+    if(LabelNode == pg.nodes[n].type) {
+      V(5) cerr << TS() << " Fxied (label): " << pg.nodes[n].toString() << endl;
+    }
+
+    if(ObservableNode == pg.nodes[n].type)
+      lp.variables[v_h].fixValue( 1.0 );
+    else {
+      lprel.feature_vector[v_h][PrefixInvisibleElement + string("REWARD4LABEL_") + pg.nodes[n].toString()] = 9999.0;
+      V(1) cerr << TS() << "Rewarded: " << pg.nodes[n].toString() << endl;
+    }
+  } else if(2 <= pg.nodes[n].rhs.size()) {
+    /* Multiple RHS? */
+    foreachc(unordered_set<int>, r, pg.nodes[n].rhs)
+      con_mrhs.push_back(createNodeVar(*r), 1.0);
+  }
+
+  repeat(i, pg.nodes[n].cond_neqs.size()) {
+    con_mrhs.push_back(createNodeVar(pg.getSubNode(pg.nodes[n].cond_neqs[i].first, pg.nodes[n].cond_neqs[i].second)), -1.0);
+    con_mrhs.rhs -= 1.0;
+  }
+
+  if(0 < ci.hypothesized_literals.count(n))// || 1574 == n || 1897 == n)
+    lp.variables[v_h].fixValue( 1.0 );
+
+//  if(15 == n || 13 == n)
+//    lp.variables[v_h].fixValue( 1.0 );
+
+  if(con_mrhs.vars.size() > 0) {
+    con_mrhs.push_back(v_h, -1.0 * con_mrhs.vars.size());
+    //p_out_lp->addConstraint(con_mrhs);
+  }
+
+  /* COST OF HYPOTHESIS. */
+  //if(pg.nodes[n].lit.predicate != "=" || (pg.nodes[n].lit.predicate == "=" && pg.nodes[n].lit.wa_number != 0.0)) {
+    string str_feature_hypothesized = (string)(LabelNode == pg.nodes[n].type ? PrefixInvisibleElement : "") +
+        "BUILTIN_HYPOTHESIZED_" + pg.nodes[n].toString();
+    lprel.feature_vector[v_h][str_feature_hypothesized] =
+        LabelNode == pg.nodes[n].type ? 9999.0 : -pg.nodes[n].lit.wa_number-0.001;
+  //}
+
+  /* CONSTANT IS CONSTANT MODE? */
+  if(pg.nodes[n].lit.predicate == "=") {
+    if(pg.nodes[n].lit.terms[0] != pg.nodes[n].lit.terms[1] &&
+        pg.nodes[n].lit.terms[0].isConstant() && pg.nodes[n].lit.terms[1].isConstant()) {
+      lp.variables[v_h].fixValue(0.0);
+    }
+  }
+
+  /* FEATURE: EXPLAINED. */
+  factor_t fc_explained(OrFactorTrigger);
+
+  pg_edge_set_t::const_iterator iter_eg = pg.edges.find(n);
+  if( pg.edges.end() != iter_eg ) {
+    /* WE CAN RECEIVE THE REWARD IF AT LEAST ONE CONJUNCTION EXPLAINING THIS LITERAL IS HYPOTHESIZED. */
+    repeat(j, iter_eg->second.size()) {
+      //if(!pg.isHyperNodeForUnification(iter_eg->second[j])) continue;
+      int v_cnj = createConjVar(iter_eg->second[j]);
+      fc_explained.push_back(v_cnj, 1.0);
+    }
+  }
+
+  //cerr << pg.nodes[n].toString() << ":" << pg.nodes[n].lit.wa_number << endl;
+
+  if(LabelNode == pg.nodes[n].type || (!ci.use_only_user_score && !ci.no_explained)) {
+    if(pg.nodes[n].lit.predicate != "mention'") {
+      //cerr << pg.nodes[n].toString() << endl;
+
+      string str_feature = (string)(LabelNode == pg.nodes[n].type ? PrefixInvisibleElement : "") +
+        "BUILTIN_EXPLAINED_" + kb.getExplainedFeatureGroup(pg.nodes[n].lit.toPredicateArity());
+
+      if(0 < pg.nodes[n].depth) str_feature += "_INFERRED_BY_" + pg.nodes[n].instantiated_by.axiom;
+
+      if(pg.nodes[n].lit.predicate != "=") {
+        int v_fc_explained = LabelNode == pg.nodes[n].type && pg.nodes[n].lit.predicate == "=" ? v_h : fc_explained.apply(&lp, "fc_" + str_feature, false, false, true);
+
+        if(-1 != v_fc_explained) {
+          lprel.n2ev[n] = v_fc_explained;
+          lprel.feature_vector[v_fc_explained][str_feature] =
+              LabelNode == pg.nodes[n].type ? 9999.0 : pg.nodes[n].lit.wa_number;
+          //cerr << pg.nodes[n].lit.wa_number << endl;
+          //lprel.feature_vector[v_fc_explained][str_feature] = LabelNode == pg.nodes[n].type ? 9999.0 : 1.0;
+
+          /* THE LITERAL CAN BE REWARDED IF THE LITERAL IS HYPOTHESIZED. */
+          lp_constraint_t con_imp("rew_hypo" + pg.nodes[n].toString(), LessEqual, 0);
+          con_imp.push_back(v_fc_explained, 1);
+          con_imp.push_back(v_h, -1);
+          lp.addConstraint(con_imp);
+        }
+      }
+    }
+  }
+
+  // lprel.feature_vector[v_h][store_item_t("PRIOR_" + pg.nodes[n].lit.toPredicateArity())] =
+  //   1.0 / mymax(1, (double)(pg.nodes.size()*pg.nodes.size()));
+  // if(pg.nodes[n].lit.predicate == "=")
+  //   lprel.feature_vector[v_h][store_item_t("UNIFY_PRIOR_EQ")] = 10.0 / mymax(1, (double)(pg.vc_unifiable.variables.size()*pg.vc_unifiable.variables.size()));
+    //lprel.feature_vector[v_h][store_item_t("!UNIFY_PRIOR")] = 10.0 / mymax(1, (double)(pg.vc_unifiable.variables.size()*pg.vc_unifiable.variables.size()));
+
+  if(pg.nodes[n].f_prohibited)
+    lp.variables[v_h].fixValue(0.0);
+
+  int partner = -1;
+
+  if(pg.nodes[n].lit.predicate == "=" ) {
+    if(-1 != (partner = pg.getNegSubNode(pg.nodes[n].lit.terms[0], pg.nodes[n].lit.terms[1]))) {
+      lp_constraint_t con_mx(::toString("inc%d", n), LessEqual, 1.0);
+      con_mx.push_back(v_h, 1.0);
+      con_mx.push_back(createNodeVar(partner), 1.0);
+      lp.addConstraint(con_mx);
+    }
+  } else if(pg.nodes[n].lit.predicate == "!=" ) {
+    if(-1 != (partner = pg.getSubNode(pg.nodes[n].lit.terms[0], pg.nodes[n].lit.terms[1]))) {
+      lp_constraint_t con_mx(::toString("inc%d", n), LessEqual, 1.0);
+      con_mx.push_back(v_h, 1.0);
+      con_mx.push_back(createNodeVar(partner), 1.0);
+      lp.addConstraint(con_mx);
+    }
+  }
+
+  return v_h;
+}
+
+/* and_{1,2,3} <=> h_i ^ h_c1 ^ h_c2 ^ ... ^ h_c3. */
+int lp_inference_cache_t::createConjVar(int hn) {
+  int& v_hn = lprel.hn2v[hn];
+
+  if( 0 != v_hn )
+    return v_hn;
+
+  char buffer[1024]; sprintf( buffer, "and_%d", hn );
+  v_hn = lp.addVariable( lp_variable_t( string( buffer ) ) );
+
+  /* and_{1,2,3} <=> h_i ^ h_c1 ^ h_c2 ^ ... ^ h_c3. */
+  lp_constraint_t con(::toString("and_%d", hn), Range, 0, 1 );
+  repeat( j, pg.hypernodes[hn].size() )
+    con.push_back(createNodeVar(pg.hypernodes[hn][j]), 1.0 );
+  con.rhs = 1.0 * con.vars.size() - 1;
+  con.push_back(v_hn, -1.0 * con.vars.size());
+  lp.addConstraint(con);
+
+  /* THIS NODE NEEDS TO PAY IF THIS CONJUNCTION IS TRUE. */
+  if(0 < pg.edges_name.count(hn)) {
+    const string &edge_name = pg.edges_name.find(hn)->second;
+    if("0" != edge_name && !ci.use_only_user_score) {
+      string str_cute_name = "BUILTIN_AXIOM_" + ("?" == edge_name ?
+                                           ::toString("%s", pg.edges_axiom.find(hn)->second.c_str()) :
+                                           edge_name);
+
+      // factor_t fc_axiom(AndFactorTrigger);
+      // fc_axiom.push_back(v_hn);
+
+      // int v_axiom = fc_axiom.apply(&lp, "fc_" + str_cute_name);
+      // if(-1 != v_axiom)
+      //lprel.feature_vector[v_hn][str_cute_name] = pg.nodes[pg.hypernodes[hn][0]].lit.wa_number;
+
+
+
+      //lprel.feature_vector[v_hn][str_cute_name] = 1 * pg.hypernodes[hn].size() * pg.edges_rhs[hn];
+
+      repeat(k, pg.hypernodes[hn].size()) {
+        // string str_cute_name = "BUILTIN_" + ("?" == edge_name ?
+        //                                      ::toString("AXIOM_%d_AT_%s", k, pg.edges_axiom.find(hn)->second.c_str()) :
+        //                                      edge_name);
+        // factor_t fc_axiom(AndFactorTrigger);
+        // fc_axiom.push_back(v_hn);
+
+        // int v_axiom = fc_axiom.apply(&lp, str_cute_name);
+        // lprel.feature_vector[v_axiom][str_cute_name] = pg.nodes[pg.hypernodes[hn][k]].lit.wa_number;
+
+        /* GIVE SOME SCORE FOR EXPLAINING MULTIPLE THINGS TOGETHER. */
+        // if(pg.nodes[pg.hypernodes[hn][k]].lit.predicate == "=" || pg.nodes[pg.hypernodes[hn][k]].lit.predicate == "!=")
+        //   continue;
+
+        // string str_cute_name = "BUILTIN_INFORMATIVE_" + pg.nodes[pg.hypernodes[hn][k]].lit.toPredicateArity();
+
+        // int v_info = fc_axiom.apply(&lp, str_cute_name);
+        // lprel.feature_vector[v_info][str_cute_name] += 1;
+      }
+    }
+  }
+
+  return v_hn;
+}
+
+int lp_inference_cache_t::createConsistencyConstraint(int _n1, int _n2, const unifier_t &theta) {
+  if(_n1 > _n2) swap(_n1, _n2);
+
+//  static hash<string> hashier;
+//  size_t id = hashier(::toString("%d:%d:%s", _n1, _n2, theta.toString().c_str()));
+//
+//  if(0 < mx_produced.count(id)) return -1;
+//  mx_produced.insert(id);
+
+  pg_node_t &n1 = pg.nodes[_n1], &n2 = pg.nodes[_n2];
+
+  lp_constraint_t con_m(::toString("inc%d-%d", n1.n, n2.n), LessEqual, 1);
+  con_m.push_back(createNodeVar(n1.n), 1.0);
+  con_m.push_back(createNodeVar(n2.n), 1.0);
+
+  bool             f_fails = false;
+
+  repeat(j, theta.substitutions.size()) {
+    if(theta.substitutions[j].terms[0] == theta.substitutions[j].terms[1]) continue;
+    if(theta.substitutions[j].terms[0].isConstant() && theta.substitutions[j].terms[1].isConstant() &&
+       theta.substitutions[j].terms[0] != theta.substitutions[j].terms[1]) { f_fails = true; break; }
+
+    int v_coref = createNodeVar(pg.getSubNode(theta.substitutions[j].terms[0], theta.substitutions[j].terms[1]));
+    if(-1 == v_coref) { f_fails=true; break; }
+
+    con_m.push_back(v_coref, 1.0);
+    con_m.rhs += 1.0;
+  }
+
+  if(f_fails) return -1;
+
+  return lp.addConstraint(con_m);
+}
+
+int lp_inference_cache_t::createTransitivityConstraint(const store_item_t &ti, const store_item_t &tj, const store_item_t &tk) {
+  int
+    v_titj = createNodeVar(pg.getSubNode(ti, tj)),
+    v_tjtk = createNodeVar(pg.getSubNode(tj, tk)),
+    v_titk = createNodeVar(pg.getSubNode(ti, tk));
+
+  if( -1 == v_titj || -1 == v_tjtk || -1 == v_titk ) return -1;
+
+  vector<size_t> items; items.push_back(ti.getHash()); items.push_back(tj.getHash()); items.push_back(tk.getHash());
+  sort(items.begin(), items.end());
+
+  // static hash<string> hashier;
+  // size_t id = hashier(::join(items.begin(), items.end(), "%d", ":"));
+
+  // if(0 < tc_produced.count(id)) return -1;
+  // tc_produced.insert(id);
+
+  // cerr << ti << tj << tk << endl;
+  
+  lp_constraint_t con_trans1(::toString("trans%d", lp.constraints.size()), GreaterEqual, -1 );
+  con_trans1.push_back( v_titk, 1.0 );
+  con_trans1.push_back( v_titj, -1.0 );
+  con_trans1.push_back( v_tjtk, -1.0 );
+  lp.addConstraint( con_trans1 );
+
+  lp_constraint_t con_trans2(::toString("trans%d", lp.constraints.size()), GreaterEqual, -1 );
+  con_trans2.push_back( v_titk, -1.0 );
+  con_trans2.push_back( v_titj, 1.0 );
+  con_trans2.push_back( v_tjtk, -1.0 );
+  lp.addConstraint( con_trans2 );
+
+  lp_constraint_t con_trans3(::toString("trans%d", lp.constraints.size()), GreaterEqual, -1 );
+  con_trans3.push_back( v_titk, -1.0 );
+  con_trans3.push_back( v_titj, -1.0 );
+  con_trans3.push_back( v_tjtk, 1.0 );
+  lp.addConstraint( con_trans3 );
+
+  return 1;
+}
+
+void lp_inference_cache_t::fixGoldClustering() {
+  unordered_set<store_item_t> variables;
+  variable_cluster_t          vc_gold;
+
+  /* FIRST WE IDENTIFY THE CLUSTER IN THE CASE THAT USER MAY SPECIFY CONFLICTED CLUSTER. */
+  repeat(i, pg.labelnodes.size()) {
+    int  n    = pg.labelnodes[i];
+    bool f_eq = pg.nodes[n].lit.predicate == "=",
+      f_ineq  = pg.nodes[n].lit.predicate == "!=";
+
+    if(f_eq || f_ineq) {
+      repeat( j, pg.nodes[n].lit.terms.size() ) {
+        repeatf( k, j+1, pg.nodes[n].lit.terms.size() ) {
+          variables.insert(pg.nodes[n].lit.terms[j]);
+          variables.insert(pg.nodes[n].lit.terms[k]);
+
+          if(f_eq) {
+            int n_node = pg.getSubNode(pg.nodes[i].lit.terms[j], pg.nodes[i].lit.terms[k]);
+            if(-1 == n_node) {
+              cerr << TS() << "Not in search space:" << pg.nodes[i].lit.terms[j] << "," << pg.nodes[i].lit.terms[k] << endl;
+              continue;
+            }
+
+            int partner = pg.getNegSubNode(pg.nodes[i].lit.terms[j], pg.nodes[i].lit.terms[k]);
+
+            if(-1 != partner) {
+              if(ObservableNode == pg.nodes[partner].type || LabelNode == pg.nodes[partner].type) {
+                W("Inconsistent: " << pg.nodes[i].toString());
+                continue;
+              }
+            }
+
+            lp.variables[createNodeVar(n_node)].fixValue(1);
+          }
+
+          if(f_eq) vc_gold.add(pg.nodes[n].lit.terms[j], pg.nodes[n].lit.terms[k]);
+        } }
+    }
+  }
+
+  repeat(i, pg.nodes.size()) {
+    if(pg.nodes[i].lit.predicate != "=") continue;
+
+    if(!vc_gold.isInSameCluster(pg.nodes[i].lit.terms[0], pg.nodes[i].lit.terms[1])) {
+      int v_coref = createNodeVar(pg.getSubNode(pg.nodes[i].lit.terms[0], pg.nodes[i].lit.terms[1]));
+      if(-1 == v_coref) continue;
+
+      int partner = pg.getSubNode(pg.nodes[i].lit.terms[0], pg.nodes[i].lit.terms[1]);
+
+      if(-1 != partner) {
+        if(ObservableNode == pg.nodes[partner].type || LabelNode == pg.nodes[partner].type) {
+          W("Inconsistent: " << pg.nodes[i].toString());
+          continue;
+        }
+      }
+
+      lp.variables[v_coref].fixValue(0);
+    }
+  }
+
+  // vector<store_item_t> ordered_variables(variables.begin(), variables.end());
+
+  // repeat(i, ordered_variables.size()) {
+  //   repeatf(j, i+1, ordered_variables.size()) {
+  //     bool f_eq = vc_gold.isInSameCluster(ordered_variables[i], ordered_variables[j]);
+
+  //     int v_coref = createNodeVar(f_eq ? pg.getSubNode(ordered_variables[i], ordered_variables[j]) : pg.getNegSubNode(ordered_variables[i], ordered_variables[j]));
+
+  //     /* Shouldn't make the variable, because it means that the
+  //        solution is not in the search space.  */
+  //     if( -1 == v_coref ) {
+  //       cerr << TS() << "Not in the candidate hypothesis space: " << ordered_variables[i] << (f_eq ? "=" : "!=") << ordered_variables[j] << endl;
+  //       continue;
+  //     }
+
+  //     V(5) cerr << TS() << "Fix: " << ordered_variables[i] << (f_eq ? "=" : "!=") << ordered_variables[j] << endl;
+  //     lp.variables[v_coref].fixValue(1);
+  //   } }
+
+}
 
 #ifdef USE_LOCALSOLVER
 #include "localsolver.h"
@@ -1011,39 +1045,40 @@ ilp_solution_type_t function::solveLP_LS(vector<lp_solution_t> *p_out_sols, cons
   unordered_map<int, LSExpression*> var_map;
   
   repeat( i, lp.variables.size() ) {
-    if( lp.variables[i].isFixed() ) {
-      LSExpression *p_var = p_model->createExpression( O_Bool );
+    if(!lp.variables[i].isFixed()) {
+      LSExpression *p_var = p_model->createExpression(O_Bool);
       var_map[i] = p_var;
 
-      if( 0 != lp.variables[i].obj_val ) {
-        p_cost->addOperand(p_model->createExpression(O_Prod, lp.variables[i].obj_val, p_var));
-        p_model->addConstraint(p_model->createExpression(O_Eq, p_var, lp.variables[i].fixed_val));
-      }
+      if( 0 != lp.variables[i].obj_val )
+    	  p_cost->addOperand( p_model->createExpression(O_Prod, lp.variables[i].obj_val, p_var));
+
     } else {
-      LSExpression *p_var = p_model->createExpression( O_Bool );
+      LSExpression *p_var = p_model->createConstant(lp.variables[i].fixed_val);
       var_map[i] = p_var;
 
-      if( 0 != lp.variables[i].obj_val ) p_cost->addOperand( p_model->createExpression( O_Prod, lp.variables[i].obj_val, p_var ) );
+      if( 0 != lp.variables[i].obj_val )
+        p_cost->addOperand(p_model->createExpression(O_Prod, lp.variables[i].obj_val, p_var));
+
     }
   }
 
-  if( 0 == p_cost->getNbOperands() )
-    p_cost->addOperand( p_model->createConstant( 0.0 ) );
+  if(0 == p_cost->getNbOperands())
+    p_cost->addOperand(p_model->createConstant( 0.0 ));
 
   /* Convert constraints. */
-  repeat( i, lp.constraints.size() ) {
-    if( !lp.constraints[i].is_active ) continue;
-    
-    LSExpression *p_sum = p_model->createExpression( O_Sum );
+  repeat(i, lp.constraints.size()) {
+    if(!lp.constraints[i].is_active) continue;
 
-    repeat( j, lp.constraints[i].vars.size() )
-      p_sum->addOperand( p_model->createExpression( O_Prod, lp.constraints[i].coes[j], var_map[ lp.constraints[i].vars[j] ] ) );
-    
+    LSExpression *p_sum = p_model->createExpression(O_Sum);
+
+    repeat(j, lp.constraints[i].vars.size())
+      p_sum->addOperand(p_model->createExpression(O_Prod, lp.constraints[i].coes[j], var_map[lp.constraints[i].vars[j]]));
+
     switch( lp.constraints[i].opr ) {
-    case Equal: {      
+    case Equal: {
       p_model->addConstraint( p_model->createExpression( O_Eq, p_sum, lp.constraints[i].lhs ) );
       break; }
-      
+
     case LessEqual: {
       p_model->addConstraint( p_model->createExpression( O_Leq, p_sum, lp.constraints[i].rhs ) );
       break; }
@@ -1056,7 +1091,7 @@ ilp_solution_type_t function::solveLP_LS(vector<lp_solution_t> *p_out_sols, cons
       p_model->addConstraint( p_model->createExpression( O_Leq, p_sum, lp.constraints[i].rhs ) );
       p_model->addConstraint( p_model->createExpression( O_Geq, p_sum, lp.constraints[i].lhs ) );
       break; }
-      
+
     }
   }
 
@@ -1078,12 +1113,17 @@ ilp_solution_type_t function::solveLP_LS(vector<lp_solution_t> *p_out_sols, cons
   ls.solve();
 
   /* Update the optimized value based on the solution of LP. */
+  LSSolution *p_lssol = ls.getSolution();
+
   lp_solution_t sol(lp);
-  sol.sol_type      = SubOptimal;
+  sol.sol_type      =
+  		SS_Optimal  == p_lssol->getStatus() ? Optimal : (
+  		SS_Feasible == p_lssol->getStatus() ? SubOptimal : NotAvailable);
   sol.optimized_obj = 0.0;
   
   repeat( i, lp.variables.size() ) {
-    sol.optimized_values[i]  = var_map[i]->getValue();
+
+    sol.optimized_values[i]  = lp.variables[i].isFixed() ? lp.variables[i].fixed_val : var_map[i]->getValue();
     sol.optimized_obj       += sol.optimized_values[i] * lp.variables[i].obj_val;
   }
 

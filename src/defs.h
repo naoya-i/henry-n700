@@ -1,14 +1,21 @@
 #pragma once
 
+#define USE_OMP
 #define USE_GUROBI
 //#define USE_LOCALSOLVER
 
 #include <sqlite3.h>
+#include <cdb.h>
 
 #include <vector>
-#include <deque>
 #include <string>
 #include <list>
+#include <deque>
+#include <algorithm>
+
+#ifdef USE_OMP
+#include <omp.h>
+#endif
 
 #include <iostream>
 #include <sstream>
@@ -19,6 +26,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <fcntl.h>
 
 #include <sys/time.h>
 #include <stdlib.h>
@@ -28,7 +36,7 @@
 
 #include <pcrecpp.h>
 
-#include <Python.h>
+#include <python2.7/Python.h>
 
 #define mymax(x, y) (x > y ? x : y)
 #define mymin(x, y) (x < y ? x : y)
@@ -72,6 +80,7 @@
 #define OutputInfoFactors    "factors"
 #define OutputInfoColored    "colored"
 #define OutputInfoWeights    "weights"
+#define OutputInfoWithNumbers "costs"
 #define OutputInfoAxioms     "axioms"
 #define OutputInfoILP        "ilp"
 #define OutputInfoILPlog     "lpsolverlog"
@@ -150,7 +159,14 @@ class store_item_t {
   
  public:
   inline operator const string& () const { return m_items[m_hash]; }
-  inline store_item_t& operator =(const string &s) { m_hash = m_hashier(s); m_items[m_hash] = s; return *this; }
+
+  inline store_item_t& operator =(const string &s) {
+    m_hash = m_hashier(s);
+    #pragma omp critical
+    m_items[m_hash] = s;
+    return *this;
+  };
+
   inline store_item_t& operator =(const store_item_t &s) { m_hash = s.m_hash; return *this; }
   inline bool operator >(const store_item_t &x) const { return m_hash > x.m_hash; }
   inline bool operator <(const store_item_t &x) const { return m_hash < x.m_hash; }
@@ -182,8 +198,12 @@ class store_item_t {
   }
 
   static inline store_item_t issueUnknown() {
-    return store_item_t("A");
-    char buffer[1024]; sprintf( buffer, "_%d", m_issued_variable_count++ );
+//    return store_item_t("A");
+    char buffer[1024];
+
+#pragma omp critical
+    sprintf( buffer, "_%d", m_issued_variable_count++ );
+
     return store_item_t(buffer);
   }
 
@@ -218,7 +238,7 @@ enum ilp_solution_type_t { Optimal, SubOptimal, NotAvailable };
 enum logical_operator_t { UnderspecifiedOperator, Literal, AndOperator, OrOperator, ImplicationOperator, NotOperator, IncOperator };
 enum sampling_method_t { Random, Uniform };
 enum sexp_stack_type_t { ListStack, StringStack, TupleStack };
-enum inference_method_t { BnB, LocalSearch, RoundLP, CuttingPlaneBnB, NoTransitivity };
+enum inference_method_t { BnB, LocalSearch, RoundLP, CuttingPlaneBnB, LazyBnB, NoTransitivity };
 enum objective_function_t { Cost, LossAugmented, LabelGiven };
 enum score_function_type_t { WeightedAbduction, UserDefined };
 enum learn_method_t { OnlinePassiveAggressive };
@@ -292,6 +312,15 @@ inline string TS() {
   return toString( "\33[0;34m# %02d/%02d/%04d %02d:%02d:%02d\33[0m] ", 1+p_ltm->tm_mon, p_ltm->tm_mday, 1900+p_ltm->tm_year, p_ltm->tm_hour, p_ltm->tm_min, p_ltm->tm_sec );
 }
 
+namespace function {
+  inline string getWord(const string &l) {
+    size_t loc_h = l.find("-");
+    if(string::npos != l.substr(loc_h+1).find("in")) return l;
+    if(string::npos == loc_h) return l;
+    return l.substr(0, loc_h);
+  }
+}
+
 template <class T> bool has_intersection( const T &s1_begin, const T &s1_end, const T &s2_begin, const T &s2_end ) {
   for( T i1=s1_begin; s1_end!=i1; ++i1 )
     for( T i2=s2_begin; s2_end!=i2; ++i2 )
@@ -356,8 +385,12 @@ struct sexp_stack_t {
 
 class sexp_reader_t {
  private:
-  istream              &m_stream;
-  deque<sexp_stack_t*>  m_stack;
+  istream              *m_stream;
+  string               *m_string_stream;
+
+  int                   m_string_stream_counter;
+
+  list<sexp_stack_t*>  m_stack;
   sexp_stack_t          m_damn;
   list<sexp_stack_t>    m_stack_list;
 
@@ -371,12 +404,17 @@ class sexp_reader_t {
   size_t        read_bytes;
 
   inline ~sexp_reader_t() { clearStack(); }
-  inline sexp_reader_t(istream &_stream) : n_line(1), read_bytes(0), m_stream( _stream ), stack( m_damn ) { m_stack.push_back( new_stack( sexp_stack_t(ListStack) ) ); ++(*this); };
-  inline deque<sexp_stack_t*> &getQueue() { return m_stack; }
+  inline sexp_reader_t() : stack(m_damn) {};
+  inline sexp_reader_t(istream &_stream) : n_line(1), read_bytes(0), m_string_stream_counter(-1), m_stream( &_stream ), stack( m_damn ) { m_stack.push_back( new_stack( sexp_stack_t(ListStack) ) ); ++(*this); };
+  inline sexp_reader_t(string &_stream) : n_line(1), read_bytes(0), m_string_stream_counter(0), m_string_stream( &_stream ), stack( m_damn ) { m_stack.push_back( new_stack( sexp_stack_t(ListStack) ) ); ++(*this); };
+  inline list<sexp_stack_t*> &getQueue() { return m_stack; }
   inline list<sexp_stack_t>   &getList() { return m_stack_list; }
+
+  inline void setStream(istream &_stream) { m_stack.clear(); m_stack_list.clear(); n_line = 1; read_bytes = 0; m_string_stream_counter = -1; m_stream = &_stream; stack = m_damn; m_stack.push_back( new_stack( sexp_stack_t(ListStack) ) ); ++(*this); };
+  inline void setStream(string &_stream) { m_stack.clear(); m_stack_list.clear(); n_line = 1; read_bytes = 0; m_string_stream_counter = 0; m_string_stream = &_stream; stack = m_damn; m_stack.push_back( new_stack( sexp_stack_t(ListStack) ) ); ++(*this); };
   
   sexp_reader_t& operator++();
-  inline bool isEnd() { return !m_stream.good(); }
+  inline bool isEnd() { return -1 == m_string_stream_counter ? !m_stream->good() : m_string_stream_counter >= m_string_stream->length()+1; }
   inline bool isRoot() { return 1 == m_stack.size(); }
   inline void clearStack() { m_stack_list.clear(); m_stack.clear(); m_stack.push_back( new_stack( sexp_stack_t(ListStack) ) ); stack = m_damn; }
   inline void clearLatestStack(int n) { repeat(i, n) {m_stack_list.pop_back();} }
@@ -390,11 +428,12 @@ struct literal_t {
   store_item_t         predicate;
   vector<store_item_t> terms;
 
-  double               wa_number, wa_coefficient;
+  double               wa_number;
   string               extra, instantiated_by, theta, instantiated_by_all;
+  int                  id, backchained_on, i_am_from;
 
-  inline literal_t() : wa_number(1), wa_coefficient(1) {};
-  inline literal_t( const sexp_stack_t &s ) : wa_number(1), wa_coefficient(1) {
+  inline literal_t() : wa_number(0), id(-1), backchained_on(-1) {};
+  inline literal_t( const sexp_stack_t &s ) : wa_number(0), id(-1), backchained_on(-1) {
     if( s.isFunctor() ) {
       predicate = s.children[0]->children[0]->str;
       for( int i=1; i<s.children.size(); i++ ) {
@@ -402,9 +441,10 @@ struct literal_t {
           int num_colon = 0;
           extra     = s.children[i]->getString().substr(1);
           repeat(j, s.children[i]->getString().length()) if(':' ==s.children[i]->getString()[j]) num_colon++;
+          
           if(2 <= s.children.size()) {
-            if(3 == num_colon)      { wa_number = 1; wa_coefficient = 1; }
-            else if(1 == num_colon) { wa_number = atof(s.children[i]->getString().substr(1).c_str()); wa_coefficient = wa_number; }
+            if(3 == num_colon)      { wa_number = 1; }
+            else if(1 == num_colon) { wa_number = atof(s.children[i]->getString().substr(1).c_str()); }
           }
           continue;
         }
@@ -416,27 +456,27 @@ struct literal_t {
       predicate = s.children[0]->str;
   }
   
-  inline literal_t( const string &_predicate ) : wa_number(1) {
+  inline literal_t( const string &_predicate ) : wa_number(0) {
     predicate = _predicate;
   }
 
-  inline literal_t(store_item_t _predicate, const vector<store_item_t> _terms) : wa_number(1) {
+  inline literal_t(store_item_t _predicate, const vector<store_item_t> &_terms) : wa_number(0) {
     predicate = _predicate;
     terms     = _terms;
   }
   
-  inline literal_t(const string &_predicate, const vector<store_item_t> _terms) : wa_number(1) {
+  inline literal_t(const string &_predicate, const vector<store_item_t> &_terms) : wa_number(0) {
     predicate = _predicate;
     terms     = _terms;
   }
   
-  inline literal_t(const string &_predicate, const store_item_t& term1, const store_item_t& term2) : wa_number(1) {
+  inline literal_t(const string &_predicate, const store_item_t& term1, const store_item_t& term2) : wa_number(0) {
     predicate = _predicate;
     terms.push_back(term1);
     terms.push_back(term2);
   }
   
-  inline literal_t(const string &_predicate, const string &term1, const string &term2) : wa_number(1) {
+  inline literal_t(const string &_predicate, const string &term1, const string &term2) : wa_number(0) {
     predicate = _predicate;
     terms.push_back(store_item_t(term1));
     terms.push_back(store_item_t(term2));
@@ -449,7 +489,7 @@ struct literal_t {
     return true;
   }
 
-  inline void _print( string *p_out_str, bool f_colored = false ) const {
+  inline void _print( string *p_out_str, bool f_colored = false, bool f_with_number = false ) const {
     static int color[] = {31, 32, 33, 34, 35, 36, 37, 38, 39, 40};
     (*p_out_str) += f_colored ? ::toString("\33[40m%s\33[0m", predicate.c_str()) : (const string&)predicate;
     for( int i=0; i<terms.size(); i++ ) {
@@ -458,9 +498,10 @@ struct literal_t {
       if( i == terms.size()-1 ) (*p_out_str) += ")"; else (*p_out_str) += ",";
     }
     if( f_colored ) (*p_out_str) += ::toString(":%s:[%s]", instantiated_by.c_str(), extra.c_str());
+    if( f_with_number  ) (*p_out_str) += ::toString(":%.2f:%s:%d->%d", wa_number, instantiated_by.c_str(), id, backchained_on);
   }
 
-  inline string toString( bool f_colored = false ) const { string exp; _print( &exp, f_colored ); return exp; }
+  inline string toString( bool f_colored = false, bool f_with_number = false ) const { string exp; _print( &exp, f_colored, f_with_number ); return exp; }
   inline string toPredicateArity() const { char buffer[1024]; sprintf( buffer, "%s/%d", predicate.c_str(), (int)terms.size() ); return string( buffer ); }
   inline string toSQL() const {
     vector<string> args; repeat( i, terms.size() ) args.push_back( "'"+(const string&)terms[i]+"'" );
@@ -503,17 +544,17 @@ struct logical_function_t {
 
   inline logical_function_t( const literal_t& _lit ) : lit( _lit ), opr( Literal ) {};
   
-  inline void _print( string *p_out_str, bool f_colored = false ) const {
+  inline void _print( string *p_out_str, bool f_colored = false, bool f_with_numbers = false ) const {
     switch( opr ) {
-    case Literal: { (*p_out_str) += lit.toString( f_colored ); break; }
-    case ImplicationOperator: { branches[0]._print( p_out_str, f_colored ); (*p_out_str) += " => "; branches[1]._print( p_out_str, f_colored ); break; }
-    case IncOperator: { branches[0]._print( p_out_str, f_colored ); (*p_out_str) += " _|_ "; branches[1]._print( p_out_str, f_colored ); break; }
-    case NotOperator: { (*p_out_str) += "!("; branches[0]._print( p_out_str, f_colored ); (*p_out_str) += ")"; break; }
+    case Literal: { (*p_out_str) += lit.toString( f_colored, f_with_numbers ); break; }
+    case ImplicationOperator: { branches[0]._print( p_out_str, f_colored, f_with_numbers ); (*p_out_str) += " => "; branches[1]._print( p_out_str, f_colored, f_with_numbers ); break; }
+    case IncOperator: { branches[0]._print( p_out_str, f_colored, f_with_numbers ); (*p_out_str) += " _|_ "; branches[1]._print( p_out_str, f_colored, f_with_numbers ); break; }
+    case NotOperator: { (*p_out_str) += "!("; branches[0]._print( p_out_str, f_colored, f_with_numbers ); (*p_out_str) += ")"; break; }
     case OrOperator:
     case AndOperator: {
       for( int i=0; i<branches.size(); i++ ) {
         if( Literal != branches[i].opr && NotOperator != branches[i].opr ) (*p_out_str) += "(";
-        branches[i]._print( p_out_str, f_colored );
+        branches[i]._print( p_out_str, f_colored, f_with_numbers );
         if( Literal != branches[i].opr && NotOperator != branches[i].opr ) (*p_out_str) += ")";
         if( i < branches.size()-1 ) {
           (*p_out_str) += AndOperator == opr ? " " AndString " " : " " OrString " ";
@@ -524,7 +565,7 @@ struct logical_function_t {
     }
   }
 
-  inline string toString( bool f_colored = false ) const { string exp; _print( &exp, f_colored ); return exp; }
+  inline string toString( bool f_colored = false, bool f_with_numbers = false ) const { string exp; _print( &exp, f_colored, f_with_numbers ); return exp; }
 
   inline void getAllLiterals( vector<const literal_t*> *p_out_list ) const {
     switch( opr ) {
@@ -586,7 +627,7 @@ struct unifier_t {
   }
 
   inline void add(const store_item_t &x, const store_item_t &y) {
-    if(shortcuts.end() != shortcuts.find(x)) return; //|| shortcuts.end() != shortcuts.find(y) ) return;
+    if(0 < shortcuts.count(x)) return; //|| shortcuts.end() != shortcuts.find(y) ) return;
     substitutions.push_back( literal_t( "=", x, y ) );
     shortcuts[x]        = substitutions.size()-1;
     mapping[x]          = y;
@@ -644,7 +685,7 @@ struct instantiated_by_t {
 struct pg_node_t {
   literal_t             lit;
   pg_node_type_t        type;
-  int                   n, depth, connected;
+  int                   n, depth, connected, num_instantiated;
   instantiated_by_t     instantiated_by;
   unordered_set<string> axiom_used, axiom_name_used;
   unordered_set<int>    nodes_appeared, rhs;
@@ -653,7 +694,8 @@ struct pg_node_t {
   vector<pair<store_item_t, store_item_t> > cond_neqs;
   
   inline pg_node_t( const literal_t &_lit, pg_node_type_t _type, int _n ) :
-    connected(0), n(_n), depth(0), lit( _lit ), type( _type ), f_prohibited(false), f_removed(false) {};
+    connected(0), n(_n), depth(0), lit( _lit ), type( _type ), f_prohibited(false), f_removed(false),
+    num_instantiated(0) {};
 
   inline string toString() const {
     return lit.toString() + ::toString( ":%d:%.2f", n, lit.wa_number );
@@ -766,6 +808,7 @@ struct linear_programming_problem_t {
     for( int i=0; i<variables.size(); i++ ) {
       exp << "<variable name=\""<< variables[i].name <<"\" coefficient=\""<< variables[i].obj_val <<"\"";
       if(variables[i].isFixed()) exp << " fixed=\"" << variables[i].fixed_val << "\"";
+      if(-9999.0 != variables[i].init_val) exp << " init=\"" << variables[i].init_val << "\"";
       exp << " />" << endl;
     }
     
@@ -806,7 +849,7 @@ struct lp_solution_t {
 typedef unordered_map<store_item_t, unordered_map<store_item_t, int> > pairwise_vars_t;
 
 struct lp_problem_mapping_t {
-  unordered_map<int, int>          n2v;
+  unordered_map<int, int>          n2v, n2ev;
   unordered_map<int, unordered_map<int, int> >          nn2uv, cf2v;
   unordered_map<int, int>          hn2v;
   unordered_map<int, int>          n2lc;
@@ -848,7 +891,7 @@ struct factor_t {
     if( !f_pol ) num_neg++;
   }
 
-  inline int apply( linear_programming_problem_t *p_out_lp, const string& name, bool f_prohibit = false, bool f_lazy = false ) {
+  inline int apply( linear_programming_problem_t *p_out_lp, const string& name, bool f_prohibit = false, bool f_lazy = false, bool f_uni_directional = false ) {
     if( 0 == triggers.size() ) return -1;
     
     int v_factor = -1;
@@ -885,17 +928,29 @@ struct factor_t {
       break; }
 
     case OrFactorTrigger: {
-      lp_constraint_t con( name, Range, -1, 0 );
-      con.is_lazy = f_lazy;
+      if(f_uni_directional) {
+        lp_constraint_t con( name, LessEqual, 0 );
+        con.is_lazy = f_lazy;
 
-      repeat( i, triggers.size() )
-        con.push_back( triggers[i], triggers_pol[i] ? 1.0 : -1.0 );
-      
-      con.lhs = -1.0 * con.vars.size() + 1 - num_neg;
-      con.rhs = -num_neg;
-      if( !f_prohibit ) con.push_back(v_factor, -1.0 * con.vars.size());
-      
-      p_out_lp->addConstraint( con );
+        repeat( i, triggers.size() )
+          con.push_back(triggers[i], -1);
+
+        con.push_back(v_factor, 1);
+
+        p_out_lp->addConstraint( con );
+      } else {
+        lp_constraint_t con( name, Range, -1, 0 );
+        con.is_lazy = f_lazy;
+
+        repeat( i, triggers.size() )
+          con.push_back( triggers[i], triggers_pol[i] ? 1.0 : -1.0 );
+
+        con.lhs = -1.0 * con.vars.size() + 1 - num_neg;
+        con.rhs = -num_neg;
+        if( !f_prohibit ) con.push_back(v_factor, -1.0 * con.vars.size());
+
+        p_out_lp->addConstraint( con );
+      }
       break; }
     };
     
@@ -908,7 +963,7 @@ struct explanation_t {
   lp_solution_t      lpsol;
   
   sparse_vector_t    fv;
-  logical_function_t lf;
+  logical_function_t lf, lf_obs;
   double             loss;
 
   inline explanation_t(lp_solution_t &_lpsol) : lpsol(_lpsol), loss(0.0) {};
@@ -916,18 +971,27 @@ struct explanation_t {
 };
 
 struct knowledge_base_t {
+  int                    context_pruning_cdb;
+  vector<unordered_set<int> >   word_docs;
+  
   sqlite3               *p_db;
   sqlite3_stmt          *p_ins_stmt;
   string                 filename;
   bool                   f_writable, f_in_transaction;
+  int                    num_axioms;
+  int                    num_branches;
   
+  unordered_map<string, unordered_map<string, unordered_set<int> > > bc_matrix;
+
   unordered_set<string> do_not_unifies, do_not_cares, search_constant;
   vector<pcrecpp::RE>   do_not_unifies_regex, do_not_cares_regex, search_constant_regex;
 
   unordered_map<string, string> explained_map;
   vector<pair<pcrecpp::RE, string> > explained_map_regex;
   
-  inline knowledge_base_t(bool f_writable, const string &filename) : p_db(NULL), p_ins_stmt(NULL), f_in_transaction(false) {
+  inline knowledge_base_t(bool f_writable, const string &filename) :
+    num_branches(10),
+      num_axioms(0), p_db(NULL), p_ins_stmt(NULL), f_in_transaction(false), context_pruning_cdb(-1) {
     open(f_writable, filename);
   }
   
@@ -937,6 +1001,10 @@ struct knowledge_base_t {
     if(":memory:" == kb.filename)
       kb.copy(this);
     
+    context_pruning_cdb = kb.context_pruning_cdb;
+
+    num_branches    = kb.num_branches;
+    num_axioms      = kb.num_axioms;
     do_not_unifies  = kb.do_not_unifies;
     do_not_cares    = kb.do_not_cares;
     search_constant = kb.search_constant;
@@ -954,6 +1022,10 @@ struct knowledge_base_t {
     if(":memory:" == kb.filename)
       kb.copy(this);
     
+    context_pruning_cdb = kb.context_pruning_cdb;
+
+    num_branches    = kb.num_branches;
+    num_axioms      = kb.num_axioms;
     do_not_unifies  = kb.do_not_unifies;
     do_not_cares    = kb.do_not_cares;
     search_constant = kb.search_constant;
@@ -969,37 +1041,12 @@ struct knowledge_base_t {
     V(5) cerr << TS() << "Database closed." << endl;
     sqlite3_finalize(p_ins_stmt); p_ins_stmt = NULL;
     sqlite3_close(p_db);          p_db = NULL;
+    ::close(context_pruning_cdb);
   }
 
-  inline bool copy(knowledge_base_t *p_dest) const {
-    /* DUMP THE CURRENT DATABASE. */
-    sqlite3_stmt *p_stmt   = NULL;
-    char         *p_axiom  = NULL, *p_rhs = NULL;
-    uint_t        num_cols = 0;
-  
-    if(SQLITE_OK != sqlite3_prepare_v2(p_db, "SELECT axiom, rhs FROM kb", -1, &p_stmt, 0)) {
-      E("SQL dump failed."); return false;
-    }
+  bool copy(knowledge_base_t *p_dest) const;
+  bool setContextDatabase(const string &fn);
 
-    p_dest->beginTransaction();
-
-    if(0 < (num_cols = sqlite3_column_count(p_stmt))) {
-      while(SQLITE_ROW == sqlite3_step(p_stmt)) {
-        if(NULL != (p_axiom = (char *)sqlite3_column_text(p_stmt, 0)) &&
-           NULL != (p_rhs = (char *)sqlite3_column_text(p_stmt, 1)) )
-          if(SQLITE_OK != sqlite3_exec(p_dest->p_db, ::toString("INSERT INTO kb VALUES('%s', '%s')", p_axiom, p_rhs).c_str(), NULL, 0, NULL)) {
-            E("SQL copy failed."); return false;
-          }
-      }
-    }
-
-    p_dest->commit();
-    
-    sqlite3_finalize(p_stmt);
-    
-    return true;
-  }
-  
   inline void registerSearchWithConstant(const string &s) {
     if(0 == s.find("/"))      search_constant_regex.push_back(pcrecpp::RE(s.substr(1)));
     else                      search_constant.insert(s);
@@ -1020,6 +1067,9 @@ struct knowledge_base_t {
     else                      explained_map[s] = g;
   }
   
+  int getContextVectorIndex(const string &w) const;
+  double calcContextualSimilarity(const string &w1, const string &w2) const;
+
   inline bool isUnifiable(const string &p, int a) const {
     string s = ::toString("%s/%d", p.c_str(), a);
     if(0 < do_not_unifies.count(s)) return false;
@@ -1058,132 +1108,29 @@ struct knowledge_base_t {
     return s;
   }
   
-  inline bool open(bool _f_writable, const string &_filename) {
-    if(NULL != p_ins_stmt) { sqlite3_finalize(p_ins_stmt); p_ins_stmt = NULL; }
-    if(NULL != p_db) { sqlite3_close(p_db); p_db = NULL; }
-
-    bool f_open_success = true;
-
-    /* IN-MEMORY DB MUST BE WRITABLE. */
-    if(":memory:" == _filename) _f_writable = true;
-    
-    if(SQLITE_OK != sqlite3_open_v2(_filename.c_str(), &p_db, _f_writable ? (SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE) : SQLITE_OPEN_READONLY, NULL)) {
-      f_open_success = false;
-      E( "Database error: open() failed." );
-    }
-
-    if(_f_writable) {
-      newTable();
-      
-      if(SQLITE_OK != sqlite3_prepare_v2(p_db, "INSERT INTO kb VALUES (?, ?)", -1, &p_ins_stmt, 0 ) )
-        E("Database error: prepare_v2() failed.");
-    }
-
-    f_writable = _f_writable;
-    filename   = _filename;
-
-    V(5) cerr << TS() << "Database " << (f_open_success ? "opened." : "failed to open.") << endl;
-    
-    return f_open_success;
-  }
-
-  inline void newTable() {
-    if(NULL != p_ins_stmt) sqlite3_finalize(p_ins_stmt);
-    
-    sqlite3_exec(p_db, "DROP TABLE kb", NULL, 0, NULL);
-    sqlite3_exec(p_db, "CREATE TABLE kb(axiom TEXT, rhs TEXT)", NULL, 0, NULL);
-    sqlite3_exec(p_db, "CREATE INDEX rhsindex on kb(rhs)", NULL, 0, NULL);
-
-    if(SQLITE_OK != sqlite3_prepare_v2(p_db, "INSERT INTO kb VALUES (?, ?)", -1, &p_ins_stmt, 0 ) )
-      E("Database error: prepare_v2() failed.");
-  }
+  bool open(bool _f_writable, const string &_filename);
+  void newTable();
   
-  inline void beginTransaction() {
-    if(f_in_transaction) return;
-    sqlite3_exec( p_db, "BEGIN TRANSACTION", NULL, 0, NULL );
-    f_in_transaction = true;
-  }
+  void beginTransaction();
+  void commit();
+  void vacuum();
   
-  inline void commit() {
-    if(!f_in_transaction) return;
-    sqlite3_exec( p_db, "COMMIT", NULL, 0, NULL );
-    f_in_transaction = false;
-  }
+  void pruneAxioms(unordered_map<string, unordered_set<int> > *p_out_axiom_set, const vector<const literal_t*> &literals_obs) const;
+  bool getAbductiveHypotheses(unordered_map<string, unordered_set<int> > *p_out, const string &key_pa) const;
+  bool registerIncAxiom(const sexp_stack_t &srline, const sexp_stack_t &sr);
+  bool registerAxiom(const sexp_stack_t &srline, const sexp_stack_t &sr, int _n = 2);
 
-  inline void vacuum() {
-    sqlite3_exec( p_db, "VACUUM", NULL, 0, NULL );
-  }
-  
-  inline bool registerIncAxiom(const sexp_stack_t &srline, const sexp_stack_t &sr) {
-    return registerAxiom(srline, sr, 1) && registerAxiom(srline, sr, 2);
-  }
-  
-  inline bool registerAxiom(const sexp_stack_t &srline, const sexp_stack_t &sr, int _n = 2) {
-    string key_pa, str_sr = srline.toString();
-    
-    if(StringStack == sr.children[_n]->children[0]->type)
-      key_pa = sr.children[_n]->children[0]->toString() + "/0";
-    else if(sr.children[_n]->isFunctor(AndString)) {
-      if(StringStack == sr.children[_n]->children[1]->type)
-        key_pa = sr.children[_n]->children[1]->toString() + "/0";
-      else
-        key_pa = ::toString("%s/%d", sr.children[_n]->children[1]->children[0]->toString().c_str(), sr.children[_n]->children[1]->children.size()-1);
-    } else
-      key_pa = ::toString("%s/%d", sr.children[_n]->children[0]->children[0]->toString().c_str(), sr.children[_n]->children.size()-1);
+  bool writeBcMatrix();
 
-    /* INSERT INTO kb VALUES ('(B %s)', '%s') */
-    sqlite3_reset(p_ins_stmt);
-    sqlite3_bind_text(p_ins_stmt, 1, str_sr.c_str(), str_sr.length(), SQLITE_STATIC);
-    sqlite3_bind_text(p_ins_stmt, 2, key_pa.c_str(), key_pa.length(), SQLITE_STATIC);
-    
-    if( SQLITE_DONE != sqlite3_step(p_ins_stmt) ) {
-      E( "Database error: insert() failed." );
-      return false;
-    }
+  struct axiom_t {
+    string axiom, rhs_ot;
 
-    /* FOR CONSTANTS. */
-    uint_t num_constants = 0;
-    
-    repeatf(i, 1, sr.children[_n]->children.size()) {
-      string t = sr.children[_n]->children[i]->toString();
-      if('A' <= t[0] && t[0] <= 'Z') { num_constants++; key_pa += "/" + t; }
-    }
+    inline axiom_t(const string &a, const string &ro) : axiom(a), rhs_ot(ro) {};
+  };
 
-    if(0 < num_constants) {
-      /* INSERT INTO kb VALUES ('(B %s)', '%s') */
-      sqlite3_reset(p_ins_stmt);
-      sqlite3_bind_text(p_ins_stmt, 1, str_sr.c_str(), str_sr.length(), SQLITE_STATIC);
-      sqlite3_bind_text(p_ins_stmt, 2, key_pa.c_str(), key_pa.length(), SQLITE_STATIC);
-    
-      if( SQLITE_DONE != sqlite3_step(p_ins_stmt) ) {
-        E( "Database error: insert() failed." );
-        return false;
-      }
-    }
-    
-    return true;
-  }
+  bool search(vector<axiom_t> *p_out_axioms, const string &key_pa, const unordered_set<int> &prominent_axioms,
+      int *p_out_filtered_out = NULL, bool f_pruning = false) const;
 
-  inline bool search(vector<string> *p_out_axioms, const string &key_pa) const {
-    sqlite3_stmt      *p_stmt   = NULL;
-    char              *p_val    = NULL;
-    uint_t             num_cols = 0;
-  
-    if(SQLITE_OK != sqlite3_prepare_v2(p_db, ::toString("SELECT axiom FROM kb WHERE rhs=\"%s\"", key_pa.c_str()).c_str(), -1, &p_stmt, 0)) {
-      E("SQL search query failed."); return false;
-    }
-    
-    if(0 < (num_cols = sqlite3_column_count(p_stmt))) {
-      while(SQLITE_ROW == sqlite3_step(p_stmt)) {
-        if( NULL != (p_val = (char *)sqlite3_column_text(p_stmt, 0)) )
-          p_out_axioms->push_back(p_val);
-      }
-    }
-
-    sqlite3_finalize(p_stmt);
-    
-    return p_out_axioms->size()>0;
-  }
 };
 
 struct variable_cluster_t {
@@ -1308,8 +1255,8 @@ struct inference_configuration_t {
   objective_function_t           objfunc;
   training_data_t                training_instance;
   unordered_map<string, double>  sol_cache;
-  unordered_set<int>             prohibited_literals;
-  bool                           use_cache, ignore_weight, explanation_disjoint, use_only_user_score, fix_user_weight, scaling_score_func,
+  unordered_set<int>             prohibited_literals, hypothesized_literals;
+  bool                           no_pruning, use_cache, ignore_weight, explanation_disjoint, use_only_user_score, fix_user_weight, scaling_score_func,
     no_prior, no_explained;
   uint_t                         n_start;
 
@@ -1322,7 +1269,7 @@ struct inference_configuration_t {
     loss(1.0), p_sfunc( &s ), initial_label_index(99999), output_info(""), scaling_score_func(false),
     method(LocalSearch), objfunc(Cost), nbthreads(8), explanation_disjoint(false),
     cpi_max_iteration(9999), cpi_timelimit(9999), n_start(0), use_only_user_score(false), fix_user_weight(false),
-    no_prior(false), no_explained(false)
+    no_prior(false), no_explained(false), no_pruning(false)
   {};
 
   inline bool isTimeout() const { return getTimeofDaySec() - timestart > timelimit; }
@@ -1333,6 +1280,8 @@ struct proof_graph_t {
   typedef unordered_map<size_t, vector<int> > eqhash_t;
   typedef unordered_map<store_item_t, int>        var2node_t;
   typedef unordered_map<store_item_t, var2node_t> var2var2node_t;
+  typedef unordered_map<store_item_t, string> var_type_t;
+  typedef unordered_map<store_item_t, unordered_map<store_item_t, vector<int> > > eq2hnu_t;
 
   eqhash_t              eqhash;
   vector<pg_node_t>     nodes;
@@ -1340,19 +1289,24 @@ struct proof_graph_t {
   vector<vector<int> > hypernodes;
   vector<int>           labelnodes;
   unordered_set<string> used_axiom_tokens, used_axiom_types;
-  unordered_set<string> observed_variables;
-  unordered_set<size_t> already_ua_produced;
+  unordered_set<string> observed_variables, backchained_on;
+  unordered_set<string> already_ua_produced;
   axiom_disjoint_set_t  axiom_disjoint_set;
   string                obs;
   int                   n_start;
   bool                  f_obs_processed, f_lbl_processed, f_label_not_found;
   var2var2node_t        nodes_sub, nodes_negsub;
   
+  eq2hnu_t              eq2hnu;
+
   unordered_map<store_item_t, unordered_set<store_item_t> > constants_sub;
   unordered_set<int> unification_hns;
 
+  unordered_map<int, int> type_restriction;
+  
   unordered_map<int, unordered_map<string, int> > p_x_axiom;
   
+  var_type_t                 var_type, var_type_var;
   variable_cluster_t         vc_unifiable, vc_neg_unifiable, vc_observed;
   pg_node_map_t              p2n;
   pg_node_hypernode_map_t    n2hn;
@@ -1360,9 +1314,22 @@ struct proof_graph_t {
   unordered_map<int, string> edges_name;
   unordered_map<int, string> edges_axiom;
   unordered_map<int, int>    edges_rhs;
+  unordered_map<int, unordered_map<int, pg_hypernode_t> > u2hn;
   pg_term_map_t              t2n;
 
   inline proof_graph_t() : f_obs_processed(false), f_lbl_processed(false), f_label_not_found(false) {}
+
+  inline pg_hypernode_t getUnifierHyperNode(int ni, int nj) {
+    if(ni > nj) swap(ni, nj);
+
+    unordered_map<int, unordered_map<int, pg_hypernode_t> >::const_iterator i = u2hn.find(ni);
+    if(u2hn.end() == i) return -1;
+
+    unordered_map<int, pg_hypernode_t>::const_iterator j = i->second.find(nj);
+    if(i->second.end() == j) return -1;
+
+    return j->second;
+  }
 
   inline double getNormalizer() const {
     if(0 == vc_unifiable.variables.size()) return 1.0;
@@ -1397,14 +1364,13 @@ struct proof_graph_t {
     return true;
     
   }
-  
+
   inline bool getNode( const vector<int> **p_out_nodes, store_item_t term ) const {
     pg_term_map_t::const_iterator iter_tm = t2n.find( term );    
     if( t2n.end() == iter_tm ) return false;
 
     (*p_out_nodes) = &iter_tm->second;
     return true;
-    
   }
   
   inline bool getNode( const vector<int> **p_out_nodes, store_item_t predicate, int arity ) const {
@@ -1414,7 +1380,8 @@ struct proof_graph_t {
     unordered_map<int, vector<int> >::const_iterator iter_an = iter_nm->second.find( arity );
     if( iter_nm->second.end() == iter_an ) return false;
 
-    (*p_out_nodes) = &iter_an->second;
+    if(NULL != p_out_nodes) (*p_out_nodes) = &iter_an->second;
+
     return true;
     
   }
@@ -1482,6 +1449,12 @@ struct proof_graph_t {
     return -1;
   }
 
+  inline bool isCompatibleType(const store_item_t &t1, const store_item_t &t2) const {
+    var_type_t::const_iterator i1 = var_type.find(t1), i2 = var_type.find(t2);
+    if(var_type.end() == i1 || var_type.end() == i2) return true;
+    return i1->second == i2->second;
+  }
+
   inline int addNode( const literal_t &lit, pg_node_type_t type, int n_parent = -1 ) {
     nodes.push_back(pg_node_t( lit, type, nodes.size()));
     
@@ -1502,6 +1475,14 @@ struct proof_graph_t {
       vc_neg_unifiable.add(t1, t2);
     }
 
+    if(string::npos != lit.predicate.toString().find("-vb") ||
+        string::npos != lit.predicate.toString().find("-nn") ||
+        string::npos != lit.predicate.toString().find("-adj"))
+      var_type[lit.terms[0]] = lit.predicate;
+
+    if(string::npos != lit.predicate.toString().find("event"))
+      var_type_var[lit.terms[0]] = lit.terms[1];
+    
     static hash<string> hashier;
     
     repeat(i, lit.terms.size()) {
@@ -1538,7 +1519,8 @@ struct proof_graph_t {
     edges[v1].push_back(hv2);
   }
 
-  void printGraph( const lp_solution_t &sol, const linear_programming_problem_t& lpp, const lp_problem_mapping_t &lprel, const string &property = "", ostream* p_out = g_p_out ) const;
+  bool produceEqualityAssumptions(const knowledge_base_t &kb, const inference_configuration_t &c);
+  void printGraph( const lp_solution_t &sol, const linear_programming_problem_t& lpp, const lp_problem_mapping_t &lprel, const string &property = "", ostream* p_out = g_p_out, logical_function_t *p_hypothesis = NULL ) const;
   bool produceUnificationAssumptions(const knowledge_base_t &kb, const inference_configuration_t &c);
   void detectInconsistentNodes(int n_obs, const logical_function_t&);
   
@@ -1885,6 +1867,11 @@ struct lp_inference_cache_t {
   unordered_set<size_t>            tc_produced;
   unordered_set<size_t>            mx_produced;
 
+  inline lp_inference_cache_t(const lp_inference_cache_t &_ic) :
+    kb(_ic.kb), ci(_ic.ci), num_variable_clusters(_ic.num_variable_clusters),
+    pg(_ic.pg), lp(_ic.lp), lprel(_ic.lprel), loss(_ic.loss),
+    elapsed_prepare(_ic.elapsed_prepare), elapsed_ilp(_ic.elapsed_ilp),
+    cpi_iteration(_ic.cpi_iteration) {};
   inline lp_inference_cache_t(const inference_configuration_t &_ci, const knowledge_base_t &_kb) : loss(ci), ci(_ci), kb(_kb) {};
 
   int createNodeVar(int n, bool f_brand_new = true);
@@ -1923,7 +1910,7 @@ namespace algorithm {
 namespace function {
   void initializeWeight(sparse_vector_t *p_w, const string &name, const inference_configuration_t &ic);
     
-  bool instantiateBackwardChainings( proof_graph_t *p_out_gp, int n_obs, const knowledge_base_t &kb, const inference_configuration_t &c );
+  bool instantiateBackwardChainings( proof_graph_t *p_out_gp, int n_current_pg_size, int n_obs, const knowledge_base_t &kb, const unordered_set<int> &prominent_axioms, const inference_configuration_t &c, int *p_num_filtered_out );
   bool enumeratePotentialElementalHypotheses(proof_graph_t *p_out_gp, const logical_function_t &obs, const knowledge_base_t &kb, const inference_configuration_t &c);
   
   bool convertToFeatureVector( linear_programming_problem_t *p_out_lp, lp_problem_mapping_t *p_out_lprel, lp_inference_cache_t *p_out_cache, const knowledge_base_t &kb, const proof_graph_t &gp, inference_configuration_t &c );
@@ -1932,7 +1919,7 @@ namespace function {
   ilp_solution_type_t solveLP_BnB( vector<lp_solution_t> *p_out_sols, const linear_programming_problem_t &lp, const lp_problem_mapping_t &lprel, const inference_configuration_t &c, lp_inference_cache_t *p_out_cache = NULL );
   ilp_solution_type_t solveLP_LS( vector<lp_solution_t> *p_out_sols, const linear_programming_problem_t &lp, const lp_problem_mapping_t &lprel, const inference_configuration_t &c, lp_inference_cache_t *p_out_cache = NULL );
   void roundUpLP( linear_programming_problem_t *p_out_lp );
-  void convertLPToHypothesis(logical_function_t *p_out_h, sparse_vector_t *p_out_fv, const lp_solution_t &sol, const lp_inference_cache_t &cache);
+  void convertLPToHypothesis(logical_function_t *p_out_h, logical_function_t *p_out_obs, sparse_vector_t *p_out_fv, const lp_solution_t &sol, const lp_inference_cache_t &cache);
   
   void sample( vector<double> *p_out_array, const sampling_method_t m );
 
@@ -1983,7 +1970,7 @@ namespace function {
       cerr << iter_sv->first << ":" << iter_sv->second << ", ";
     cerr << endl;
   }
-  
+
   inline string toString( const sparse_vector_t &sv, bool f_colored=false ) {
     ostringstream exp;
     for( sparse_vector_t::const_iterator iter_sv = sv.begin(); sv.end() != iter_sv; ++iter_sv ) {
@@ -1998,15 +1985,18 @@ namespace function {
       p_out_indices->insert(iter_f->first);
   }
 
-  inline bool getMGU( unifier_t *p_out_u, const literal_t &p1, const literal_t &p2, bool f_skip = false ) {
-    if( p1.predicate != p2.predicate ) return false;
-    if( p1.terms.size() != p2.terms.size() ) return false;
-    for( int i=0; i<p1.terms.size(); i++ ) {
+  inline bool getMGU( unifier_t *p_out_u, const literal_t &p1, const literal_t &p2, bool f_skip = false, bool f_check_only = false ) {
+    if(p1.predicate != p2.predicate) return false;
+    if(p1.terms.size() != p2.terms.size()) return false;
+    for(int i=0; i<p1.terms.size(); i++) {
       if(p1.terms[i] == p2.terms[i]) { p_out_u->add(p1.terms[i], p2.terms[i]); continue; }
       if(p1.terms[i].isConstant() && p2.terms[i].isConstant()) return false;
-      if(f_skip && p1.terms[i].isConstant() && !p2.terms[i].isConstant()) return false;
-      if(f_skip && '!' != ((const string&)(p1.terms[i]))[0]) continue;
-      p_out_u->add( p1.terms[i], p2.terms[i] );
+      if(f_skip) {
+        if(p1.terms[i].isConstant() && !p2.terms[i].isConstant()) return false;
+        if('!' != ((const string&)(p1.terms[i]))[0]) continue;
+      }
+      if(!f_check_only) 
+        p_out_u->add( p1.terms[i], p2.terms[i] );
     }
     return true;
   }

@@ -62,7 +62,6 @@ inference_result_type_t algorithm::infer(vector<explanation_t> *p_out_expls, lp_
   if( !c.use_cache ) {
     V(1) cerr << TS() << "Generating potential hypothesis graph..." << endl;
     if( function::enumeratePotentialElementalHypotheses( &p_out_cache->pg, obs, kb, c ) ) {
-
       if(LabelGiven == c.objfunc && p_out_cache->pg.f_label_not_found) {
         V(1) cerr << TS() << "Label is not derived by inference." << endl;
         //return GenerationTimeout;
@@ -101,9 +100,143 @@ inference_result_type_t algorithm::infer(vector<explanation_t> *p_out_expls, lp_
     c.timestart = getTimeofDaySec();
     
     switch( c.method ) {
+    case LazyBnB: {
+      unordered_set<string> g;
+      double last_cost = -9999.0;
+      vector<int> activated_nodes;
+
+      for(int n=1; n<=100; n++) {
+        function::solveLP_BnB(&lpsols, p_out_cache->lp, p_out_cache->lprel, c, p_out_cache);
+
+        explanation_t expl(lpsols[0]);
+        function::convertLPToHypothesis(&expl.lf, &expl.lf_obs, &expl.fv, lpsols[0], *p_out_cache);
+
+        cerr << TS() << "I=" << n << ": HYPOTHESIS: " << expl.lf.toString() << endl;
+        cerr << TS() << "I=" << n << ": COST: " << expl.lpsol.optimized_obj << " (DIFF:"<< (expl.lpsol.optimized_obj-last_cost) <<")" << endl;
+        
+//        if(fabs(expl.lpsol.optimized_obj - last_cost) <= 1e-10) {
+//          cerr << TS() << "I=" << n << ": NO COST INCREASED." << endl;
+//          break;
+//        }
+
+        last_cost = expl.lpsol.optimized_obj;
+
+        /* CALCULATE THE COST WITH EQUALITIES. */
+        size_t size_g = g.size();
+
+        activated_nodes.clear();
+
+        repeat(i, expl.lf.branches.size()) {
+          repeatf(j, i+1, expl.lf.branches.size()) {
+            literal_t &l_i = expl.lf.branches[i].lit, &l_j = expl.lf.branches[j].lit;
+
+            if(!(l_i.predicate != "!=" && l_i.predicate != "=" && l_i.predicate == l_j.predicate &&
+                 l_i.terms.size() == l_j.terms.size())) continue;
+            
+            unifier_t theta;
+            pg_hypernode_t hn4u = p_out_cache->pg.getUnifierHyperNode(l_i.i_am_from, l_j.i_am_from);
+
+            if(-1 == hn4u) continue;
+            if(0.5 > expl.lpsol.optimized_values[p_out_cache->lprel.hn2v[hn4u]]) continue;
+            if(!function::getMGU(&theta, l_i, l_j)) continue;
+
+            V(4) cerr << TS() << "UNIFIED: " << l_i.toString() << "~" << l_j.toString() << "/" << theta.toString() << endl;
+            V(5) cerr << TS() << l_i.i_am_from << ":" << l_j.i_am_from << "/" << theta.toString() << endl;
+
+            V(5) cerr << TS() << p_out_cache->pg.hypernodeToString(hn4u) << endl;
+            
+            repeat(k, theta.substitutions.size()) {
+              store_item_t t1 = theta.substitutions[k].terms[0],
+                t2 = theta.substitutions[k].terms[1];
+
+              if(t1 > t2) swap(t1, t2);
+              if(t1 == t2 || (t1 != t2 && t1.isConstant() && t2.isConstant())) continue;
+
+              if(0 < g.count(t1.toString()+t2.toString())) {
+                V(4) cerr << TS() << "... Already passed." << endl;
+                continue;
+              }
+
+              g.insert(t1.toString()+t2.toString());
+
+              int node_sub = p_out_cache->pg.getSubNode(t1, t2);
+
+              /* CREATE A NEW NODE IF IT DOESN'T EXIST. */
+              if(-1 == node_sub) {
+                node_sub = p_out_cache->pg.addNode(literal_t("=", t1, t2), HypothesisNode);
+                activated_nodes.push_back(node_sub);
+              }
+
+              /* ACTIVATE. */
+              V(4) cerr << TS() << "ADDED: " << literal_t("=", t1, t2).toString() << endl;
+                
+              p_out_cache->pg.nodes[node_sub].lit.wa_number = 0;
+              
+              vector<int> &hn4us = p_out_cache->pg.eq2hnu[t1][t2];
+
+              repeat(l, hn4us.size()) {
+                p_out_cache->pg.hypernodes[hn4us[l]].push_back(node_sub);
+              }
+            }
+          }
+        }
+
+        if(size_g == g.size()) {
+          cerr << TS() << "I=" << n << ": TERMINATED (NO NEW POTENTIAL EQUALITY ASSUMPTIONS)." << endl;
+          break;
+        }
+
+        p_out_cache->pg.produceEqualityAssumptions(kb, c);
+
+        /* STORE THE CURRENT SOLUTION. */
+        unordered_map<int, double> n2sol, hn2sol, n2esol;
+        
+        for(unordered_map<int, int>::iterator j=p_out_cache->lprel.n2v.begin(); p_out_cache->lprel.n2v.end()!=j; ++j)
+          n2sol[j->first] = lpsols[0].optimized_values[j->second];
+        
+        for(unordered_map<int, int>::iterator j=p_out_cache->lprel.n2ev.begin(); p_out_cache->lprel.n2ev.end()!=j; ++j)
+          n2esol[j->first] = lpsols[0].optimized_values[j->second];
+
+        for(unordered_map<int, int>::iterator j=p_out_cache->lprel.hn2v.begin(); p_out_cache->lprel.hn2v.end()!=j; ++j)
+          hn2sol[j->first] = lpsols[0].optimized_values[j->second];
+
+        /* REFRESH THE LP PROBLEM. */
+        p_out_cache->lp = linear_programming_problem_t();
+        p_out_cache->lprel = lp_problem_mapping_t();
+
+        function::convertToFeatureVector(&p_out_cache->lp, &p_out_cache->lprel, p_out_cache, kb, p_out_cache->pg, c);
+        function::convertToLP(&p_out_cache->lp, &p_out_cache->lprel, p_out_cache, kb, p_out_cache->pg, c);
+
+        /* SET MIP START. */
+        for(unordered_map<int, double>::iterator j=n2sol.begin(); n2sol.end()!=j; ++j)
+          p_out_cache->lp.variables[p_out_cache->lprel.n2v[j->first]].setInitialValue(j->second);
+
+        for(unordered_map<int, double>::iterator j=n2esol.begin(); n2esol.end()!=j; ++j)
+          p_out_cache->lp.variables[p_out_cache->lprel.n2ev[j->first]].setInitialValue(j->second);
+
+        for(unordered_map<int, double>::iterator j=hn2sol.begin(); hn2sol.end()!=j; ++j)
+          p_out_cache->lp.variables[p_out_cache->lprel.hn2v[j->first]].setInitialValue(j->second);
+
+        repeat(i, activated_nodes.size())
+          p_out_cache->lp.variables[p_out_cache->lprel.n2v[activated_nodes[i]]].setInitialValue(1.0);
+
+        repeat(i, p_out_cache->lp.variables.size()) {
+          if(-9999.0 == p_out_cache->lp.variables[i].init_val)
+            p_out_cache->lp.variables[i].setInitialValue(1);
+        }
+
+        if(c.isOutput(OutputInfoILP)) (*g_p_out) << p_out_cache->lp.toString() << endl;
+
+        lpsols.clear();
+      }
+
+    } break;
+
     case NoTransitivity:
+#ifdef USE_GUROBI
     case CuttingPlaneBnB:
     case BnB: { lpsol_type = function::solveLP_BnB(&lpsols, p_out_cache->lp, p_out_cache->lprel, c, p_out_cache); break; }
+#endif
 #ifdef USE_LOCALSOLVER
     case LocalSearch: { lpsol_type = function::solveLP_LS(&lpsols, p_out_cache->lp, p_out_cache->lprel, c, p_out_cache); break; }
 #endif
@@ -128,13 +261,13 @@ inference_result_type_t algorithm::infer(vector<explanation_t> *p_out_expls, lp_
         if( 0.5 < lpsols[s].optimized_values[ iter_t2->second ] ) lpsols[s].optimized_obj -= -EqBias;
       }
     
-    function::convertLPToHypothesis( &expl.lf, &expl.fv, lpsols[s], *p_out_cache );
+    function::convertLPToHypothesis( &expl.lf, &expl.lf_obs, &expl.fv, lpsols[s], *p_out_cache );
     p_out_cache->loss.setLoss(c.training_instance, expl.lf, p_out_cache->lprel, lpsols[s].optimized_obj);
     p_out_cache->loss.minimum_loss = p_out_cache->loss.loss;
     expl.loss                      = p_out_cache->loss.loss;
 
-    (*p_out) << "<observed size=\"" << obs.branches.size() << "\">" << endl << _sanitize(obs.toString(c.isOutput(OutputInfoColored))) << endl << "</observed>" << endl
-             << "<hypothesis score=\"" << lpsols[s].optimized_obj << "\">" << endl << _sanitize(expl.lf.toString(c.isOutput(OutputInfoColored))) << endl << "</hypothesis>" << endl
+    (*p_out) << "<observed size=\"" << obs.branches.size() << "\">" << endl << _sanitize(expl.lf_obs.toString(c.isOutput(OutputInfoColored), c.isOutput(OutputInfoWithNumbers))) << endl << "</observed>" << endl
+             << "<hypothesis score=\"" << lpsols[s].optimized_obj << "\">" << endl << _sanitize(expl.lf.toString(c.isOutput(OutputInfoColored), c.isOutput(OutputInfoWithNumbers))) << endl << "</hypothesis>" << endl
              << "<vector score=\""<< score_function_t::getScore(c.p_sfunc->weights, expl.fv, c.ignore_weight) <<"\">" << endl << _sanitize(function::toString(expl.fv, c.isOutput(OutputInfoColored))) << endl << "</vector>" << endl;
 
     if(c.isOutput(OutputInfoWeights))
@@ -541,7 +674,7 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
   if( 0 == args.size() ) args.push_back( "-" );
 
   unordered_map<string, int> confusion_matrix;
-  bool                       f_classified = false, f_structured = false, f_p_found = false;
+  bool                       f_classified = false, f_structured = false, f_p_found = false, f_registered_axiom;
     
   for( uint_t a=0; a<args.size(); a++ ) {
     /* Start interpreting the input. */
@@ -606,7 +739,7 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
         }
       }
 
-      if(sr.stack.isFunctor(FnScoreFunc)) {
+      if(sr.stack.isFunctor(FnScoreFunc) && NULL != p_out_sfunc) {
         /* ADDITIONAL SCORE FUNCTION. */
         _SYNCHK(sr.isRoot(), sr, "Function " << FnScoreFunc << " should be root.");
           
@@ -706,7 +839,9 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
         if(!f_register_success) {
           if(NULL != p_out_kb)
             p_out_kb->beginTransaction();
-        
+
+          f_registered_axiom = true;
+
           if(-1 != i_lf) {
             _SYNCHK(sr.stack.children[i_lf]->children.size() == 3, sr, "function '=>' takes two arguments. ");
             if(NULL != p_out_kb) f_register_success = p_out_kb->registerAxiom(sr.stack, *sr.stack.children[i_lf]);
@@ -721,9 +856,12 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
 
       if(sr.stack.isFunctor(FnObservation) && NULL != p_out_ic) {
         /* SHOULD BE ROOT. */
-        _SYNCHK(sr.isRoot(), sr, "Function "<< FnObservation <<" should be root.")
+        _SYNCHK(sr.isRoot(), sr, "Function "<< FnObservation <<" should be root.");
         
         /* UPDATE THE KB. */
+        p_out_kb->commit();
+        p_out_kb->beginTransaction();
+        p_out_kb->writeBcMatrix();
         p_out_kb->commit();
         
         int
@@ -795,7 +933,7 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
             obs.getAllLiterals(&literals_obs);
 
             cache.printStatistics(expls[k].lpsol);
-            if(p_out_ic->isOutput(OutputInfoProofgraph)) cache.pg.printGraph(expls[k].lpsol, cache.lp, cache.lprel);
+            if(p_out_ic->isOutput(OutputInfoProofgraph)) cache.pg.printGraph(expls[k].lpsol, cache.lp, cache.lprel, "", &cout, &expls[k].lf);
         
             if( -1 != i_y ) {
               if( -1 != i_cls ) {
@@ -863,8 +1001,16 @@ bool _moduleCompileKb( command_option_t &cmd, vector<string> &args ) {
   
   _moduleProcessInput(NULL, NULL, &kb, NULL, NULL, cmd, args);
   
-  cerr << TS() << "Done. Defragmenting the database..." << endl;
+  cerr << TS() << "Done." << endl;
+  cerr << TS() << "Writing backward-chaining matrix..." << endl;
   kb.commit();
+
+  kb.beginTransaction();
+  kb.writeBcMatrix();
+  kb.commit();
+
+  cerr << TS() << "Done." << endl;
+  cerr << TS() << "Defragmenting the database..." << endl;
   kb.vacuum();
   
   cerr << TS() << "Bon Appetit!" << endl;
@@ -881,7 +1027,6 @@ bool _moduleProcessInferOptions( inference_configuration_t *p_out_con, command_o
   if( !has_key( cmd, 'O' ) ) cmd[ 'O' ] = "";
   if( !has_key( cmd, 'i' ) ) cmd[ 'i' ] = "bnb";
   if( !has_key( cmd, 'k' ) ) cmd[ 'k' ] = "1";
-  if( !has_key( cmd, 'c' ) ) cmd[ 'c' ] = "wa";
 
   p_out_con->depthlimit           = atoi( cmd[ 'd' ].c_str() );
   p_out_con->timelimit            = atof( cmd[ 'T' ].c_str() );
@@ -894,11 +1039,16 @@ bool _moduleProcessInferOptions( inference_configuration_t *p_out_con, command_o
   p_out_con->scaling_score_func   = has_key(cmd, 's');
   p_out_con->no_prior             = has_key(cmd, 'z');
   p_out_con->no_explained         = has_key(cmd, 'I');
+  p_out_con->no_pruning           = has_key(cmd, 'n');
 
   if(has_key(cmd, 'X')) {
     p_out_con->prohibited_literals.insert(atoi(cmd['X'].c_str()));
   }
   
+  if(has_key(cmd, 'x')) {
+    p_out_con->hypothesized_literals.insert(atoi(cmd['x'].c_str()));
+  }
+
   if( has_key( cmd, 'e' ) ) {
     g_ext.filename = p_out_con->extension_module;
     g_ext.args     = cmd[ 'f' ];
@@ -909,9 +1059,9 @@ bool _moduleProcessInferOptions( inference_configuration_t *p_out_con, command_o
   else if( "bnb" == cmd['i'] )  p_out_con->method = BnB;
   else if( "cpi" == cmd['i'] )  p_out_con->method = CuttingPlaneBnB;
   else if( "ntr" == cmd['i'] )  p_out_con->method = NoTransitivity;
+  else if( "lazy" == cmd['i'] )  p_out_con->method = LazyBnB;
 
-  if( "wa" == cmd['c'] ) p_out_con->p_sfunc->tp = WeightedAbduction;
-  else                   p_out_con->p_sfunc->tp = UserDefined;
+  p_out_con->p_sfunc->tp = WeightedAbduction;
 
   p_out_con->output_info = cmd[ 'O' ];
   if( atoi( cmd['v'].c_str() ) >= 2 ) p_out_con->output_info += OutputInfoILPlog;
@@ -926,6 +1076,15 @@ bool _moduleInfer(command_option_t &cmd, vector<string> &args) {
   inference_configuration_t c( sfunc );
   knowledge_base_t          kb(has_key(cmd, 'b') ? false : true, has_key(cmd, 'b') ? cmd['b'] : ":memory:");
   
+  if(has_key(cmd, 'c')) {
+    kb.setContextDatabase(cmd['c']);
+    cerr << TS() << "Contextual pruning activated." << endl;
+  }
+
+  if(has_key(cmd, 'h')) {
+    kb.num_branches = atoi(cmd['h'].c_str());
+  }
+
   /* Setting the parameters. */
   c.ignore_weight = true;
   
@@ -966,7 +1125,7 @@ bool _moduleLearn( command_option_t &cmd, vector<string> &args ) {
 }
 
 int main( int argc, char **pp_args ) {
-  
+
   string exec_options;
   
   for( int i=1; i<argc; i++ ) exec_options += (1 != i ? " " : "") + string( pp_args[i] );
@@ -975,7 +1134,7 @@ int main( int argc, char **pp_args ) {
 
   command_option_t cmd;
   vector<string>   args;
-  function::getParsedOption( &cmd, &args, "IzsUDm:uv:i:r:b:C:N:t:T:w:E:O:o:p:d:c:e:f:k:S:X:", argc, pp_args );
+  function::getParsedOption( &cmd, &args, "IzsUDh:m:uv:i:r:b:C:N:nt:T:w:E:O:o:p:d:c:e:f:k:S:X:x:", argc, pp_args );
 
   if( !has_key( cmd, 'm' ) ) { cerr << str_usage << endl; return 1; }
   srand(has_key(cmd, 'r') ? atoi(cmd['r'].c_str()) : time(NULL));

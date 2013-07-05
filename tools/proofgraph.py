@@ -13,6 +13,7 @@ def main():
 	parser = argparse.ArgumentParser( description="Inference visualization script for Henry-N700." )
 	parser.add_argument( "--graph", help="ID of the graph that you want to visualize.", nargs="+", default=[None] )
 	parser.add_argument( "--potential", help="Show all the path including potentials.", action="store_true", default=False )
+	parser.add_argument( "--clustered", help="Replace name of variables with cluster id.", action="store_true", default=False )
 	parser.add_argument( "--path", help="Path to henry output.", default="/" )
 	parser.add_argument( "--format", help="Format (dot|html|gexf).", default="dot" )
 	parser.add_argument( "--input", help="The input file to be evaluated.", nargs="+", default=["-"] )
@@ -23,7 +24,7 @@ def main():
 
 	if "dot" == pa.format:
 		print "digraph {"
-		print "graph [rankdir=\"LR\", overlap=\"prism\"];"
+		print "graph [rankdir=\"TB\", size=\"30.0,10.0!\"];"
 
 	if "gexf" == pa.format:
 		print """<?xml version="1.0" encoding="UTF-8"?>
@@ -210,27 +211,77 @@ def _outputDot(t, pg, pa):
 	obs_nodes = []
 	other_nodes = []
 	is_explained = {}
+	dict_obs = {}
+	cost_nodes = {}
 
 	global n_lfc
 
 	dig_id += 1
 
+	u_log = {}
+	v2c   = {}
+	cname = {}
+	
+	for unif in pg.xpath( "./variable-cluster" ):		
+		for var in unif.text.split(","):
+			v2c[var] = unif.attrib["name"]
+			
+			if not cname.has_key(unif.attrib["name"]):
+				# ALWAYS REWRITE THE CLUSTER LABEL IF IT'S EMPTY.
+				cname[unif.attrib["name"]] = var
+				
+			elif var[0].isupper():
+				# CONSTANTS ALWAYS REWRITE THE CLUSTER LABEL.
+				cname[unif.attrib["name"]] = var
+				
+			elif var[0] != "_" and not cname[unif.attrib["name"]].isupper():
+				# OBSERVED VARIABLES REWRITE THE CLUSTER LABEL ONLY IF IT'S NOT CONSTANT.
+				cname[unif.attrib["name"]] = var
+			
+		#cname[unif.attrib["name"]] = "{%s}" % unif.text
+		
+	def _convCluster(x):
+		if not pa.clustered: return x
+		return ("%s~%s" % (cname[v2c[x]], x) if cname[v2c[x]] != x else x) if v2c.has_key(x) else x
+
+	def_bg_color = "#eeeeee"
+	eq_nodes     = {}
+	
 	for lit in pg.xpath( "./literal" ):
+		lstr = re.sub("!=\((.*?),(.*?)\)", r"\1 != \2", lit.text)
+		lstr = re.split("[(,)]", lstr)
+		
+		cost_nodes[lit.attrib["id"]] = float(lstr[-1].split(":")[-1])
+		
 		if not pa.potential and "yes" != lit.attrib["active"]: continue
-		if lit.text.startswith("="): continue
 		if None != re.match("^(sentid|partofspeech|mention|follows|precedes|nnprecedes|samearg|det|verb|lemma)", lit.text): continue
 		
-		nstr = "n%s [shape=\"none\", label=\"%s\", fontcolor=\"%s\"]" % (
-			dig_id*1000+int(lit.attrib["id"]), re.sub("!=\((.*?),(.*?)\)", r"\1 != \2", lit.text),
+		prp  = lstr[-1][1:].split(":")
+		prp.reverse()
+		prp[0] = "$" + prp[0]
+		prp  = prp[:-1]
+		prp  = "/".join(prp)
+		
+		lstr = "%s\\n(%s)\\n%s" % (lstr[0], ", ".join([_convCluster(x) for x in lstr[1:-1]]), prp)
+		
+		lstr += "/%s" % lit.attrib["id"]
+		
+		nstr = "n%s [shape=\"none\", color=\"%s\", style=\"filled\", label=\"%s\", fontcolor=\"%s\", width=\"0.1\", height=\"0.01\", nodesep=0.75, nodesep-0.75]" % (
+			dig_id*1000+int(lit.attrib["id"]), def_bg_color,
+			lstr,
 			("#000000" if "yes" == lit.attrib["active"] else "#cccccc") if "4" != lit.attrib[ "type" ] else "#0000cc" )
 
+		if lit.text.startswith("="):
+			eq_nodes[lit.attrib["id"]] = nstr
+			continue
+		
 		if "2" == lit.attrib[ "type" ]:
 			obs_nodes += [nstr]
-
-			print "n%s -> C [weight=10]" % (dig_id*1000+int(lit.attrib["id"]))
+			dict_obs[dig_id*1000+int(lit.attrib["id"])] = 1
 			
 		if "3" == lit.attrib[ "type" ]: other_nodes += [nstr]
-		if "4" == lit.attrib[ "type" ]: obs_nodes += [nstr]
+		if "4" == lit.attrib[ "type" ]:
+			obs_nodes += [nstr]
 		
 	for expl in pg.xpath( "./explanation" ):
 		lhs, rhs	 = expl.text.split( "=>" )
@@ -241,50 +292,77 @@ def _outputDot(t, pg, pa):
 
 		for explainee in rhs:
 			explainee = explainee.strip()
-			is_explained[ explainee ] = 1
+			
+			if "yes" == expl.attrib["active"]:
+				is_explained[ str(dig_id*1000+int(explainee)) ] = 1
 
 			if len( lhs ) > 1:
 				n_lfc += 1
-				print "lfc%d [label=\"^\", style=\"%s\"]" % (n_lfc, line_style)
-				print "lfc%d -> n%s [style=\"%s\"]" % (n_lfc, dig_id*1000+int(explainee), line_style)
+				print "lfc%d [label=\"^\", style=\"%s\", width=\"0.01\", height=\"0.01\"]" % (n_lfc, line_style)
+				print "lfc%d -> n%s [style=\"%s\", color=\"%s\", penwidth=%d, weight=%f]" % (
+					n_lfc, dig_id*1000+int(explainee),
+					"bold" if dict_obs.has_key(dig_id*1000+int(explainee)) else line_style,
+					"#555555" if dict_obs.has_key(dig_id*1000+int(explainee)) else "#000000",
+					4 if dict_obs.has_key(dig_id*1000+int(explainee)) else 1,
+					4.0 if dict_obs.has_key(dig_id*1000+int(explainee)) else 2.0
+					)
 
 			for explainer in lhs:
 				explainer = explainer.strip()
+				k = explainer				
+				if eq_nodes.has_key(k):
+					other_nodes += [eq_nodes[k]]
+					del eq_nodes[k]
+				
 				if len( lhs ) > 1:
-					print "n%s -> lfc%d [weight=\"1\", label=\"%s\", style=\"%s\"]" % (dig_id*1000+int(explainer), n_lfc, expl.attrib["name"], line_style)
-				else:
-					print "n%s -> n%s [weight=1, label=\"%s\", style=\"%s\"]" % (dig_id*1000+int(explainer), dig_id*1000+int(explainee), expl.attrib["name"], line_style)
+					print "n%s -> lfc%d [dir=\"none\", weight=\"8.0\", label=\"%s\", style=\"%s\"]" % (dig_id*1000+int(explainer), n_lfc, expl.attrib["name"], line_style)
 
-	u_log = {}
+				else:
+					print "n%s -> n%s [label=\"%s\", style=\"%s\", color=\"%s\", penwidth=%d, weight=%f]" % (
+						dig_id*1000+int(explainer), dig_id*1000+int(explainee), expl.attrib["name"],
+						"bold" if dict_obs.has_key(dig_id*1000+int(explainee)) else line_style,
+						"#555555" if dict_obs.has_key(dig_id*1000+int(explainee)) else "#000000",
+						4 if dict_obs.has_key(dig_id*1000+int(explainee)) else 1,
+						4.0 if dict_obs.has_key(dig_id*1000+int(explainee)) else 2.0)
 
 	for unif in pg.xpath( "./unification" ):
-		if u_log.has_key( unif.attrib["l1"] + unif.attrib["l2"] ) or u_log.has_key( unif.attrib["l2"] + unif.attrib["l1"] ): continue
-		u_log[ unif.attrib["l1"] + unif.attrib["l2"] ] = 1
+		if u_log.has_key( unif.attrib["l1"] + " " + unif.attrib["l2"] ) or u_log.has_key( unif.attrib["l2"] + " " + unif.attrib["l1"] ): continue
+		u_log[ unif.attrib["l1"] + " " + unif.attrib["l2"] ] = 1
+
+		if "yes" == unif.attrib["active"]:
+			if cost_nodes[unif.attrib["l1"]] < cost_nodes[unif.attrib["l2"]]:
+				is_explained[str(dig_id*1000+int(unif.attrib["l2"]))] = 1
+			else:
+				is_explained[str(dig_id*1000+int(unif.attrib["l1"]))] = 1
 
 		if not pa.potential and "yes" != unif.attrib["active"]: continue
-
-		print "n%s -> n%s [dir=\"none\", label=\"%s\", style=\"dotted\", fontcolor=\"%s\" color=\"%s\"]" % (
-			dig_id*1000+int(unif.attrib["l1"]), dig_id*1000+int(unif.attrib["l2"]), unif.attrib["unifier"],
-			"#000000" if "yes" == unif.attrib["active"] else "#999999", "#bb0000" if "yes" == unif.attrib["active"] else "#bb6666")
+		
+		print "n%s -> n%s [weight=3.0, dir=\"none\", label=\"%s\", style=\"dashed\", fontcolor=\"%s\" color=\"%s\"]" % (
+			dig_id*1000+int(unif.attrib["l1"]), dig_id*1000+int(unif.attrib["l2"]), _convCluster(unif.attrib["unifier"]),
+			"#ff0000" if "yes" == unif.attrib["active"] else "#999999", "#bb0000" if "yes" == unif.attrib["active"] else "#bbaaaa")
 
 	def coloring( nodes ):
-		return [n if is_explained.has_key( n.split( " " )[0][1:] ) else n.replace( "#000000", "#bb0000" ) for n in nodes]
+		return [n if is_explained.has_key( n.split( " " )[0][1:] ) else n.replace( "#000000", "#bb0000" ).replace("color=\"%s\"" % def_bg_color, "color=\"#ffeeee\"") for n in nodes]
 
 	def coloringExpl( nodes, f_exp ):
-		return [n if is_explained.has_key( n.split( " " )[0][1:] ) else n.replace( "#000000", "#bb0000" ) for n in nodes if f_exp == is_explained.has_key( n.split( " " )[0][1:] )]
+		return [n if is_explained.has_key( n.split( " " )[0][1:] ) else n.replace( "#000000", "#bb0000" ).replace("color=\"%s\"" % def_bg_color, "color=\"#ffeeee\"") for n in nodes if f_exp == is_explained.has_key( n.split( " " )[0][1:] )]
 
-	#print "subgraph cluster_o%d {" % int(dig_id*1000)
-	#print "subgraph cluster_o1%d {" % int(dig_id*1000)
+	print "subgraph cluster_o%d {" % int(dig_id*1000)
+	print "style=filled;"
+	print "color=\"#cccccc\";"
+	print "subgraph cluster_o1%d {" % int(dig_id*1000)
+	print "label=\"\";"
 	print "\n".join( coloringExpl( obs_nodes, False ) ).encode('utf-8')
-	#print "}"
+	print "}"
 
-	#print "subgraph cluster_o2%d {" % int(dig_id*1000)
+	print "subgraph cluster_o2%d {" % int(dig_id*1000)
+	print "label=\"\";"
 	print "\n".join( coloringExpl( obs_nodes, True ) ).encode('utf-8')
-	#print "}"
-	#print "}"
+	print "}"
+	print "}"
 
-	print "\n".join( coloringExpl( other_nodes, True ) ).encode('utf-8')
 	print "\n".join( coloringExpl( other_nodes, False ) ).encode('utf-8')
+	print "\n".join( coloringExpl( other_nodes, True ) ).encode('utf-8')
 
 	print "}"
 

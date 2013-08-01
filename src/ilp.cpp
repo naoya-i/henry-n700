@@ -723,12 +723,12 @@ int lp_inference_cache_t::createNodeVar(int n, bool f_brand_new) {
   }
 
   /* COST OF HYPOTHESIS. */
-  //if(pg.nodes[n].lit.predicate != "=" || (pg.nodes[n].lit.predicate == "=" && pg.nodes[n].lit.wa_number != 0.0)) {
+  if(pg.nodes[n].lit.predicate != "=" || (pg.nodes[n].lit.predicate == "=" && pg.nodes[n].lit.wa_number != 0.0)) {
     string str_feature_hypothesized = (string)(LabelNode == pg.nodes[n].type ? PrefixInvisibleElement : "") +
         "BUILTIN_HYPOTHESIZED_" + pg.nodes[n].toString();
     lprel.feature_vector[v_h][str_feature_hypothesized] =
         LabelNode == pg.nodes[n].type ? 9999.0 : -pg.nodes[n].lit.wa_number-0.001;
-  //}
+  }
 
   /* CONSTANT IS CONSTANT MODE? */
   if(pg.nodes[n].lit.predicate == "=") {

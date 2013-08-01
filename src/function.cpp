@@ -326,7 +326,6 @@ bool function::enumeratePotentialElementalHypotheses(proof_graph_t *p_out_pg, co
 
       if(c.isTimeout()) continue; // return false;
       if(p_out_pg->nodes[i].f_removed) continue;
-      if("" != p_out_pg->nodes[i].lit.extra && 0 == p_out_pg->nodes[i].lit.wa_number) continue;
       if(!instantiateBackwardChainings(p_out_pg, current_node_size, i, kb, prominent_axioms, c, &num_filtered_out)) continue; //return false;
 
       V(4) cerr << TS() << p_out_pg->nodes[i].toString() << ": " << (p_out_pg->nodes.size() - n_local_start) << " literals were produced." << endl;
@@ -456,7 +455,7 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, int n_curre
   
   double stime = getTimeofDaySec();
 
-  //cerr << p_out_pg->nodes[n_obs].toString() << ":" << axioms.size() << endl;
+  cerr << "B:" << p_out_pg->nodes[n_obs].toString() << ":" << axioms.size() << endl;
 
   //repeat(a, min((size_t)100, axioms.size())) {
   repeat(a, axioms.size()) {
@@ -494,6 +493,8 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, int n_curre
         p_out_pg->detectInconsistentNodes(n_obs, logical_function_t(*sr.stack.children[i_inc]));
         continue;
       }
+
+      if("" != p_out_pg->nodes[n_obs].lit.extra && 0 == p_out_pg->nodes[n_obs].lit.wa_number) continue;
 
       if(LabelNode == p_out_pg->nodes[n_obs].type) continue;
       
@@ -721,6 +722,7 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, int n_curre
           p_out_pg->nodes[n_backchained].rhs.insert(rhs_collections[i].second.begin(), rhs_collections[i].second.end());
           p_out_pg->nodes[n_backchained].cond_neqs.insert(p_out_pg->nodes[n_backchained].cond_neqs.end(), cond_neqs.begin(), cond_neqs.end());
           p_out_pg->nodes[n_backchained].f_prohibited             = f_prohibited;
+          p_out_pg->nodes[n_backchained].axiom_disj               = axiom_disj;
 
           V(5) cerr << TS() << log_head << "new Literal: " <<
             p_out_pg->nodes[n_backchained].lit.toString() << endl;
@@ -763,7 +765,7 @@ void proof_graph_t::detectInconsistentNodes(int n_obs, const logical_function_t 
   string axiom_str = lf.toString();
   
   /* Already applied? */
-  if(p_x_axiom[n_obs][axiom_str] > 0 ) return;
+  //if(p_x_axiom[n_obs][axiom_str] > 0 ) return;
   
   /* Find the inconsistent pair! */
   const vector<int> *p_nodes;
@@ -772,29 +774,37 @@ void proof_graph_t::detectInconsistentNodes(int n_obs, const logical_function_t 
   } else {
     if(!getNode(&p_nodes, lf.branches[1].lit.predicate, lf.branches[1].lit.terms.size())) return;
   }
-  
+
   repeat(i, p_nodes->size()) {          
     unifier_t theta;
     bool      f_fail = false;
+    pg_node_t
+      &n1 = nodes[n_obs].lit.predicate == lf.branches[0].lit.predicate ? nodes[n_obs] : nodes[(*p_nodes)[i]],
+      &n2 = nodes[n_obs].lit.predicate == lf.branches[0].lit.predicate ? nodes[(*p_nodes)[i]] : nodes[n_obs];
 
     repeat(t1, lf.branches[0].lit.terms.size()) {
       repeat(t2, lf.branches[1].lit.terms.size()) {
         if(lf.branches[0].lit.terms[t1] == lf.branches[1].lit.terms[t2]) {
-          theta.add(nodes[(*p_nodes)[i]].lit.terms[t1], nodes[n_obs].lit.terms[t2]);
+          theta.add(n1.lit.terms[t1], n2.lit.terms[t2]);
+
+          if(n1.lit.terms[t1].isConstant() && n2.lit.terms[t2].isConstant() &&
+              n1.lit.terms[t1] != n2.lit.terms[t2]) {
+            f_fail = true; break;
+          }
         }
 
-        if(lf.branches[0].lit.terms[t1].isConstant() && lf.branches[0].lit.terms[t1] != nodes[(*p_nodes)[i]].lit.terms[t1] && lf.branches[0].lit.terms[t1] != nodes[n_obs].lit.terms[t2]) {
+        if(lf.branches[0].lit.terms[t1].isConstant() && lf.branches[0].lit.terms[t1] != n1.lit.terms[t1] && lf.branches[0].lit.terms[t1] != n2.lit.terms[t2]) {
           f_fail = true; break;
         }
 
-        if(lf.branches[1].lit.terms[t2].isConstant() && lf.branches[1].lit.terms[t2] != nodes[(*p_nodes)[i]].lit.terms[t1] && lf.branches[1].lit.terms[t2] != nodes[n_obs].lit.terms[t2]) {
+        if(lf.branches[1].lit.terms[t2].isConstant() && lf.branches[1].lit.terms[t2] != n1.lit.terms[t1] && lf.branches[1].lit.terms[t2] != n2.lit.terms[t2]) {
           f_fail = true; break;
         }
       } }
 
     if(f_fail) continue;
 
-    V(5) cerr << TS() << "Inconsistent: " << nodes[(*p_nodes)[i]].toString() << ", " << nodes[n_obs].toString() << theta.toString() << endl;
+    V(5) cerr << TS() << "Inconsistent: " << n1.toString() << ", " << n2.toString() << theta.toString() << endl;
     
     p_x_axiom[n_obs][axiom_str] = 1;
     p_x_axiom[(*p_nodes)[i]][axiom_str] = 1;
@@ -845,6 +855,12 @@ bool proof_graph_t::produceUnificationAssumptions(const knowledge_base_t &kb, co
 //          if(has_intersection(nodes[ni].nodes_appeared.begin(), nodes[ni].nodes_appeared.end(),
 //                              nodes[nj].nodes_appeared.begin(), nodes[nj].nodes_appeared.end()))
 //            continue;
+
+          if(nodes[ni].lit.backchained_on == nodes[nj].lit.backchained_on) continue;
+
+          /* TWO NODES WHICH ARE PRODUCED FROM DISJOINT AXIOMS CANNOT BE UNIFIED. */
+          if("" != nodes[ni].axiom_disj && "" != nodes[nj].axiom_disj &&
+              nodes[ni].axiom_disj == nodes[nj].axiom_disj) continue;
 
           /* TWO LITERALS L1, L2 CANNOT BE UNIFIED IF THEY ARE IN EXPLAINER-EXPLAINEE RELATIONSHIP. */
           if(nodes[ni].nodes_appeared.end() != nodes[ni].nodes_appeared.find(nj) ||

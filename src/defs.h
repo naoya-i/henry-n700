@@ -62,7 +62,7 @@
 #define FnBackgroundKnowledge "B"
 #define FnObservation         "O"
 #define FnName                "name"
-#define FnAxiomDisjoint       "disjoint"
+#define FnAxiomDisjoint       "D"
 
 #define PrefixFixedWeight      "!"
 #define PrefixFixedValue       "@"
@@ -443,7 +443,7 @@ struct literal_t {
           repeat(j, s.children[i]->getString().length()) if(':' ==s.children[i]->getString()[j]) num_colon++;
           
           if(2 <= s.children.size()) {
-            if(3 == num_colon)      { wa_number = 1; }
+            if(3 == num_colon)      { string str = s.children[i]->getString(); wa_number = atof(str.substr(1, str.find(":", 1)).c_str()); }
             else if(1 == num_colon) { wa_number = atof(s.children[i]->getString().substr(1).c_str()); }
           }
           continue;
@@ -688,6 +688,7 @@ struct pg_node_t {
   int                   n, depth, connected, num_instantiated;
   instantiated_by_t     instantiated_by;
   unordered_set<string> axiom_used, axiom_name_used;
+  string                axiom_disj;
   unordered_set<int>    nodes_appeared, rhs;
   bool                  f_prohibited, f_removed;
   

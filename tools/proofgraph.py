@@ -34,9 +34,12 @@ def main():
                           http://www.gexf.net/1.2draft/gexf.xsd"
       version="1.2">"""
 		
+
 	for f in pa.input:
-		t			= etree.parse( open(f) if "-" != f else sys.stdin )
+		t			= etree.parse(open(f) if "-" != f else sys.stdin)
 		n_lfc = 0
+
+		print >>sys.stderr, "XML loaded."
 
 		for g in pa.graph:
 			query = "%shenry-output/result-inference/proofgraph" % pa.path
@@ -57,6 +60,7 @@ def main():
 
 	if "dot" == pa.format:
 		print "}"
+		print >>sys.stderr, "Cool."
 
 	if "gexf" == pa.format:
 		print "</gexf>"
@@ -244,7 +248,7 @@ def _outputDot(t, pg, pa):
 		if not pa.clustered: return x
 		return ("%s~%s" % (cname[v2c[x]], x) if cname[v2c[x]] != x else x) if v2c.has_key(x) else x
 
-	def_bg_color = "#eeeeee"
+	def_bg_color = "#eaeaea"
 	eq_nodes     = {}
 	
 	for lit in pg.xpath( "./literal" ):
@@ -254,20 +258,23 @@ def _outputDot(t, pg, pa):
 		cost_nodes[lit.attrib["id"]] = float(lstr[-1].split(":")[-1])
 		
 		if not pa.potential and "yes" != lit.attrib["active"]: continue
-		if None != re.match("^(sentid|partofspeech|mention|follows|precedes|nnprecedes|samearg|det|verb|lemma)", lit.text): continue
+		#if None != re.match("^(sentid|partofspeech|mention|follows|precedes|nnprecedes|samearg|det|verb|lemma)", lit.text): continue
 		
 		prp  = lstr[-1][1:].split(":")
 		prp.reverse()
 		prp[0] = "$" + prp[0]
 		prp  = prp[:-1]
 		prp  = "/".join(prp)
+
+		if "!=" in lstr[0]:
+			lstr = lstr[0].split(":")[0]
+		else:
+			lstr = "%s\\n(%s)\\n%s" % (lstr[0], ", ".join([_convCluster(x) for x in lstr[1:-1]]), prp)
+			lstr += "/%s" % lit.attrib["id"]
 		
-		lstr = "%s\\n(%s)\\n%s" % (lstr[0], ", ".join([_convCluster(x) for x in lstr[1:-1]]), prp)
-		
-		lstr += "/%s" % lit.attrib["id"]
-		
-		nstr = "n%s [shape=\"none\", color=\"%s\", style=\"filled\", label=\"%s\", fontcolor=\"%s\", width=\"0.1\", height=\"0.01\", nodesep=0.75, nodesep-0.75]" % (
+		nstr = "n%s [shape=\"none\", color=\"%s\", style=\"%s\", penwidth=\"1\", label=\"%s\", fontcolor=\"%s\", width=\"0.1\", height=\"0.01\", nodesep=0.75, nodesep-0.75]" % (
 			dig_id*1000+int(lit.attrib["id"]), def_bg_color,
+			"filled" if "yes" == lit.attrib["active"] else "", 
 			lstr,
 			("#000000" if "yes" == lit.attrib["active"] else "#cccccc") if "4" != lit.attrib[ "type" ] else "#0000cc" )
 
@@ -315,11 +322,11 @@ def _outputDot(t, pg, pa):
 					del eq_nodes[k]
 				
 				if len( lhs ) > 1:
-					print "n%s -> lfc%d [dir=\"none\", weight=\"8.0\", label=\"%s\", style=\"%s\"]" % (dig_id*1000+int(explainer), n_lfc, expl.attrib["name"], line_style)
+					print "n%s -> lfc%d [dir=\"none\", weight=\"8.0\", label=\"%s\", style=\"%s\"]" % (dig_id*1000+int(explainer), n_lfc, expl.attrib["name"] if "?" != expl.attrib["name"] else "", line_style)
 
 				else:
 					print "n%s -> n%s [label=\"%s\", style=\"%s\", color=\"%s\", penwidth=%d, weight=%f]" % (
-						dig_id*1000+int(explainer), dig_id*1000+int(explainee), expl.attrib["name"],
+						dig_id*1000+int(explainer), dig_id*1000+int(explainee), expl.attrib["name"] if "?" != expl.attrib["name"] else "",
 						"bold" if dict_obs.has_key(dig_id*1000+int(explainee)) else line_style,
 						"#555555" if dict_obs.has_key(dig_id*1000+int(explainee)) else "#000000",
 						4 if dict_obs.has_key(dig_id*1000+int(explainee)) else 1,
@@ -329,16 +336,20 @@ def _outputDot(t, pg, pa):
 		if u_log.has_key( unif.attrib["l1"] + " " + unif.attrib["l2"] ) or u_log.has_key( unif.attrib["l2"] + " " + unif.attrib["l1"] ): continue
 		u_log[ unif.attrib["l1"] + " " + unif.attrib["l2"] ] = 1
 
+		n1, n2 = dig_id*1000+int(unif.attrib["l1"]), dig_id*1000+int(unif.attrib["l2"])
+		
 		if "yes" == unif.attrib["active"]:
 			if cost_nodes[unif.attrib["l1"]] < cost_nodes[unif.attrib["l2"]]:
 				is_explained[str(dig_id*1000+int(unif.attrib["l2"]))] = 1
 			else:
 				is_explained[str(dig_id*1000+int(unif.attrib["l1"]))] = 1
+				n1, n2 = n2, n1
 
 		if not pa.potential and "yes" != unif.attrib["active"]: continue
 		
-		print "n%s -> n%s [weight=3.0, dir=\"none\", label=\"%s\", style=\"dashed\", fontcolor=\"%s\" color=\"%s\"]" % (
-			dig_id*1000+int(unif.attrib["l1"]), dig_id*1000+int(unif.attrib["l2"]), _convCluster(unif.attrib["unifier"]),
+		print "n%s -> n%s [weight=3.0, label=\"%s\", style=\"%s\", fontcolor=\"%s\" color=\"%s\"]" % (
+			n1, n2, _convCluster(unif.attrib["unifier"]),
+			"solid" if "yes" == unif.attrib["active"] else "dashed",
 			"#ff0000" if "yes" == unif.attrib["active"] else "#999999", "#bb0000" if "yes" == unif.attrib["active"] else "#bbaaaa")
 
 	def coloring( nodes ):

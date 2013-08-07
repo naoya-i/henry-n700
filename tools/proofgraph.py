@@ -15,7 +15,7 @@ def main():
 	parser.add_argument( "--potential", help="Show all the path including potentials.", action="store_true", default=False )
 	parser.add_argument( "--clustered", help="Replace name of variables with cluster id.", action="store_true", default=False )
 	parser.add_argument( "--path", help="Path to henry output.", default="/" )
-	parser.add_argument( "--format", help="Format (dot|html|gexf).", default="dot" )
+	parser.add_argument( "--format", help="Format (dot|html).", default="dot" )
 	parser.add_argument( "--input", help="The input file to be evaluated.", nargs="+", default=["-"] )
 
 	pa = parser.parse_args()
@@ -26,14 +26,6 @@ def main():
 		print "digraph {"
 		print "graph [rankdir=\"TB\", size=\"30.0,10.0!\"];"
 
-	if "gexf" == pa.format:
-		print """<?xml version="1.0" encoding="UTF-8"?>
-<gexf xmlns="http://www.gexf.net/1.2draft"
-      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-      xsi:schemaLocation="http://www.gexf.net/1.2draft
-                          http://www.gexf.net/1.2draft/gexf.xsd"
-      version="1.2">"""
-		
 
 	for f in pa.input:
 		t			= etree.parse(open(f) if "-" != f else sys.stdin)
@@ -56,14 +48,11 @@ def main():
 			for pg in t.xpath(query):
 				if "dot" == pa.format:    _outputDot(t, pg, pa)
 				elif "html" == pa.format: _outputHtml(t, pg)
-				elif "gexf" == pa.format: _outputGEXF(t, pg, pa)
 
 	if "dot" == pa.format:
 		print "}"
 		print >>sys.stderr, "Cool."
 
-	if "gexf" == pa.format:
-		print "</gexf>"
 
 def _outputHtml(t, pg):
 
@@ -290,6 +279,8 @@ def _outputDot(t, pg, pa):
 		if "4" == lit.attrib[ "type" ]:
 			obs_nodes += [nstr]
 		
+	edges = []
+	
 	for expl in pg.xpath( "./explanation" ):
 		lhs, rhs	 = expl.text.split( "=>" )
 		lhs, rhs	 = lhs.split( "^" ), rhs.split( "^" )
@@ -304,15 +295,16 @@ def _outputDot(t, pg, pa):
 				is_explained[ str(dig_id*1000+int(explainee)) ] = 1
 
 			if len( lhs ) > 1:
-				n_lfc += 1
-				print "lfc%d [label=\"^\", style=\"%s\", width=\"0.01\", height=\"0.01\"]" % (n_lfc, line_style)
-				print "lfc%d -> n%s [style=\"%s\", color=\"%s\", penwidth=%d, weight=%f]" % (
+				n_lfc = "_".join([x.strip() for x in lhs])
+				
+				print "lfc%s [label=\"^\", style=\"%s\", width=\"0.01\", height=\"0.01\"]" % (n_lfc, line_style)
+				edges += ["lfc%s -> n%s [style=\"%s\", color=\"%s\", penwidth=%d, weight=%f]" % (
 					n_lfc, dig_id*1000+int(explainee),
 					"bold" if dict_obs.has_key(dig_id*1000+int(explainee)) else line_style,
 					"#555555" if dict_obs.has_key(dig_id*1000+int(explainee)) else "#000000",
 					4 if dict_obs.has_key(dig_id*1000+int(explainee)) else 1,
 					4.0 if dict_obs.has_key(dig_id*1000+int(explainee)) else 2.0
-					)
+					)]
 
 			for explainer in lhs:
 				explainer = explainer.strip()
@@ -322,15 +314,16 @@ def _outputDot(t, pg, pa):
 					del eq_nodes[k]
 				
 				if len( lhs ) > 1:
-					print "n%s -> lfc%d [dir=\"none\", weight=\"8.0\", label=\"%s\", style=\"%s\"]" % (dig_id*1000+int(explainer), n_lfc, expl.attrib["name"] if "?" != expl.attrib["name"] else "", line_style)
-
+					edges += ["lfc%s -> lfc%s [dir=\"none\", weight=\"8.0\", color=\"white\", label=\"%s\", style=\"%s\"]" % (n_lfc, n_lfc, expl.attrib["name"] if "?" != expl.attrib["name"] else "", line_style)]
+					edges += ["n%s -> lfc%s [dir=\"none\", weight=\"8.0\", style=\"%s\"]" % (dig_id*1000+int(explainer), n_lfc, line_style)]
+					
 				else:
-					print "n%s -> n%s [label=\"%s\", style=\"%s\", color=\"%s\", penwidth=%d, weight=%f]" % (
+					edges += ["n%s -> n%s [label=\"%s\", style=\"%s\", color=\"%s\", penwidth=%d, weight=%f]" % (
 						dig_id*1000+int(explainer), dig_id*1000+int(explainee), expl.attrib["name"] if "?" != expl.attrib["name"] else "",
 						"bold" if dict_obs.has_key(dig_id*1000+int(explainee)) else line_style,
 						"#555555" if dict_obs.has_key(dig_id*1000+int(explainee)) else "#000000",
 						4 if dict_obs.has_key(dig_id*1000+int(explainee)) else 1,
-						4.0 if dict_obs.has_key(dig_id*1000+int(explainee)) else 2.0)
+						4.0 if dict_obs.has_key(dig_id*1000+int(explainee)) else 2.0)]
 
 	for unif in pg.xpath( "./unification" ):
 		if u_log.has_key( unif.attrib["l1"] + " " + unif.attrib["l2"] ) or u_log.has_key( unif.attrib["l2"] + " " + unif.attrib["l1"] ): continue
@@ -347,11 +340,13 @@ def _outputDot(t, pg, pa):
 
 		if not pa.potential and "yes" != unif.attrib["active"]: continue
 		
-		print "n%s -> n%s [weight=3.0, label=\"%s\", style=\"%s\", fontcolor=\"%s\" color=\"%s\"]" % (
+		edges += ["n%s -> n%s [weight=3.0, label=\"%s\", style=\"%s\", fontcolor=\"%s\" color=\"%s\"]" % (
 			n1, n2, _convCluster(unif.attrib["unifier"]),
 			"solid" if "yes" == unif.attrib["active"] else "dashed",
-			"#ff0000" if "yes" == unif.attrib["active"] else "#999999", "#bb0000" if "yes" == unif.attrib["active"] else "#bbaaaa")
+			"#ff0000" if "yes" == unif.attrib["active"] else "#999999", "#bb0000" if "yes" == unif.attrib["active"] else "#bbaaaa")]
 
+	print "\n".join(set(edges)) 
+	
 	def coloring( nodes ):
 		return [n if is_explained.has_key( n.split( " " )[0][1:] ) else n.replace( "#000000", "#bb0000" ).replace("color=\"%s\"" % def_bg_color, "color=\"#ffeeee\"") for n in nodes]
 
@@ -376,107 +371,6 @@ def _outputDot(t, pg, pa):
 	print "\n".join( coloringExpl( other_nodes, True ) ).encode('utf-8')
 
 	print "}"
-
-
-def _outputGEXF(t, pg, pa):
-	obs_nodes = []
-	other_nodes = []
-	is_explained = {}
-
-	global dig_id, n_lfc
-
-	dig_id += 1
-
-	print "<graph defaultedgetype=\"directed\">"
-
-	nodes = []
-	edges = []
-
-	num_group_nodes = {}
-
-	def _getNodePos(_lit):
-		x, y = 0, 0
-
-		my_group = None
-		max_node_count(my_group)
-		
-		return x, y
-	
-	for lit in pg.xpath( "./literal" ):
-		if not pa.potential and "yes" != lit.attrib["active"]: continue
-
-		pos_x, pos_y = _getNodePos(lit)
-		
-		nodes +=["<node id=\"n%s\" label=\"%s\"><viz:position x=\"%f\" y=\"%f\"></node>" % (
-				dig_id*1000+int(lit.attrib["id"]), escape(re.sub("!=\((.*?),(.*?)\)", r"\1 != \2", lit.text)),
-				pos_x, pos_y
-				) ]
-	
-	for expl in pg.xpath( "./explanation" ):
-		lhs, rhs	 = expl.text.split( "=>" )
-		lhs, rhs	 = lhs.split( "^" ), rhs.split( "^" )
-		line_style = "solid" if "yes" == expl.attrib["active"] else "dotted"
-
-		if not pa.potential and "yes" != expl.attrib["active"]: continue
-
-		for explainee in rhs:
-			explainee = explainee.strip()
-			is_explained[ explainee ] = 1
-
-			if len( lhs ) > 1:
-				n_lfc += 1
-				nodes += ["<node id=\"lfc%d\" label=\"^\" />" % (n_lfc)]
-				edges += ["<edge weight=\"10.0\" id=\"e%d\" source=\"lfc%d\" target=\"n%s\" />" % (len(edges), n_lfc, dig_id*1000+int(explainee)) ]
-
-			for explainer in lhs:
-				explainer = explainer.strip()
-				if len( lhs ) > 1:
-					edges += ["<edge weight=\"1.0\" id=\"e%d\" source=\"n%s\" target=\"lfc%d\" label=\"%s\" />" % (len(edges), dig_id*1000+int(explainer), n_lfc, expl.attrib["name"]) ]
-				else:
-					edges += ["<edge weight=\"1.0\" id=\"e%d\" source=\"n%s\" target=\"n%s\" label=\"%s\" />" % (len(edges), dig_id*1000+int(explainer), dig_id*1000+int(explainee), expl.attrib["name"]) ]
-
-	# u_log = {}
-
-	# for unif in pg.xpath( "./unification" ):
-	# 	if u_log.has_key( unif.attrib["l1"] + unif.attrib["l2"] ) or u_log.has_key( unif.attrib["l2"] + unif.attrib["l1"] ): continue
-	# 	u_log[ unif.attrib["l1"] + unif.attrib["l2"] ] = 1
-
-	# 	if not pa.potential and "yes" != unif.attrib["active"]: continue
-
-	# 	print "n%s -> n%s [dir=\"none\", label=\"%s\", style=\"dotted\", fontcolor=\"%s\" color=\"%s\"]" % (
-	# 		dig_id*1000+int(unif.attrib["l1"]), dig_id*1000+int(unif.attrib["l2"]), unif.attrib["unifier"],
-	# 		"#000000" if "yes" == unif.attrib["active"] else "#999999", "#bb0000" if "yes" == unif.attrib["active"] else "#bb6666")
-
-	# def coloring( nodes ):
-	# 	return [n if is_explained.has_key( n.split( " " )[0][1:] ) else n.replace( "#000000", "#bb0000" ) for n in nodes]
-
-	# def coloringExpl( nodes, f_exp ):
-	# 	return [n if is_explained.has_key( n.split( " " )[0][1:] ) else n.replace( "#000000", "#bb0000" ) for n in nodes if f_exp == is_explained.has_key( n.split( " " )[0][1:] )]
-
-	print " <nodes>"
-	print "\n".join(nodes)
-	print " </nodes>"
-	
-	print " <edges>"
-	print "\n".join(edges)
-	print " </edges>"
-	
-	# print "subgraph cluster_o%d {" % int(dig_id*1000)
-	# print "subgraph cluster_o1%d {" % int(dig_id*1000)
-	# print "\n".join( coloringExpl( obs_nodes, False ) ).encode('utf-8')
-	# print "}"
-
-	# print "subgraph cluster_o2%d {" % int(dig_id*1000)
-	# print "\n".join( coloringExpl( obs_nodes, True ) ).encode('utf-8')
-	# print "}"
-	# print "}"
-
-	# print "\n".join( coloringExpl( other_nodes, True ) ).encode('utf-8')
-	# print "\n".join( coloringExpl( other_nodes, False ) ).encode('utf-8')
-
-	# print "}"
-
-	print "</graph>"
 
 	
 if "__main__" == __name__: main()

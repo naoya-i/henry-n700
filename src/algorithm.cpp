@@ -237,6 +237,10 @@ inference_result_type_t algorithm::infer(vector<explanation_t> *p_out_expls, lp_
     case CuttingPlaneBnB:
     case BnB: { lpsol_type = function::solveLP_BnB(&lpsols, p_out_cache->lp, p_out_cache->lprel, c, p_out_cache); break; }
 #endif
+#ifdef USE_LPSOLVE
+    case CuttingPlaneBnB:
+    case BnB: { lpsol_type = function::solveLP_BnB(&lpsols, p_out_cache->lp, p_out_cache->lprel, c, p_out_cache); break; }
+#endif
 #ifdef USE_LOCALSOLVER
     case LocalSearch: { lpsol_type = function::solveLP_LS(&lpsols, p_out_cache->lp, p_out_cache->lprel, c, p_out_cache); break; }
 #endif

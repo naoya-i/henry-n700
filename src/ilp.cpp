@@ -5,6 +5,125 @@
 
 #include <algorithm>
 
+#ifdef USE_LPSOLVE
+#include "lp_lib.h"
+
+inline void _cb_stop_ilp( int sig_num ) {
+  signal( SIGINT, _cb_stop_ilp );
+}
+
+ilp_solution_type_t function::solveLP_BnB(vector<lp_solution_t> *p_out_sols, const linear_programming_problem_t &lp, const lp_problem_mapping_t &lprel, const inference_configuration_t &c, lp_inference_cache_t *p_out_cache ) {
+  lprec *p_lps = make_lp(0, lp.variables.size());
+
+  V(2) cerr << TS() << "Converting the problem into LP optimization problem..." << endl;
+  set_outputfile(p_lps, "lpsolve_log.txt");
+
+  /* Create variables. */
+  repeat(i, lp.variables.size()) {
+    set_binary(p_lps, 1+i, TRUE);
+
+    if(InvalidFixedValue != lp.variables[i].fixed_val)
+      set_bounds(p_lps, 1+i, lp.variables[i].fixed_val, lp.variables[i].fixed_val);
+    else
+      set_bounds(p_lps, 1+i, lp.variables[i].lb, lp.variables[i].ub);
+    set_obj(p_lps, 1+i, lp.variables[i].obj_val);
+  }
+
+  /* Set MIP starts. */
+  /* TODO. */
+
+  /* Create constraints. */
+  set_add_rowmode(p_lps, TRUE);
+
+  repeat( i, lp.constraints.size() ) {
+    if(!lp.constraints[i].is_active || lp.constraints[i].is_lazy) continue;
+
+    const lp_constraint_t &con = lp.constraints[i];
+    vector<int> vars = con.vars;
+    vector<double> coes = con.coes;
+
+    repeat(j, vars.size()) vars[j]++;
+
+    switch( con.opr ) {
+    case Equal: {
+      add_constraintex(p_lps, vars.size(), &coes[0], &vars[0], EQ, con.lhs);
+      break; }
+    case LessEqual: {
+      add_constraintex(p_lps, vars.size(), &coes[0], &vars[0], LE, con.rhs);
+      break; }
+    case GreaterEqual: {
+      add_constraintex(p_lps, vars.size(), &coes[0], &vars[0], GE, con.lhs);
+      break; }
+    case Range: {
+      add_constraintex(p_lps, vars.size(), &coes[0], &vars[0], LE, con.rhs);
+      add_constraintex(p_lps, vars.size(), &coes[0], &vars[0], GE, con.lhs);
+      break; }
+    default:
+      cerr << TS() << "SolveLP_BnB: Unknown constraint type." << endl;
+    };
+  }
+
+  set_add_rowmode(p_lps, FALSE);
+
+  /* State a maximization objective. */
+  set_maxim(p_lps);
+  set_timeout(p_lps, c.timelimit);
+
+  /* Go to hell! */
+  if(c.isOutput(OutputInfoILPlog)) beginXMLtag( "ilp-log", "solver=\"lpsolve\"" );
+
+  double time_start     = getTimeofDaySec();
+  bool   f_got_solution = false;
+  int    ret_lps = NOFEASFOUND;
+
+  if( CuttingPlaneBnB == c.method ) {
+    throw "Not implemented.";
+
+  } else {
+    signal( SIGINT, _cb_stop_ilp );
+    ret_lps = solve(p_lps);
+    signal( SIGINT, catch_int );
+
+    if(OPTIMAL == ret_lps || SUBOPTIMAL == ret_lps) {
+      lp_solution_t sol(lp);
+      sol.optimized_values.resize(lp.variables.size());
+
+      get_variables(p_lps, &sol.optimized_values[0]);
+      sol.optimized_obj = get_objective(p_lps);
+      sol.sol_type      = OPTIMAL == ret_lps ? Optimal : SubOptimal;
+      f_got_solution    = true;
+
+      p_out_sols->push_back(sol);
+    }
+  }
+  delete_lp(p_lps);
+  p_lps = NULL;
+
+  if( NULL != p_out_cache ) p_out_cache->elapsed_ilp = getTimeofDaySec() - time_start;
+
+  if(c.isOutput(OutputInfoILPlog)) endXMLtag( "ilp-log" );
+
+  /* RETURN THE OBSERVATION IF THERE IS NO SOLUTION FOUND. */
+  if(0 == p_out_sols->size()) {
+    lp_solution_t sol(lp);
+    sol.optimized_obj = 0.0;
+    sol.sol_type      = SubOptimal;
+
+    repeat( i, lp.variables.size() ) {
+      if( lp.variables[i].isFixed() )                sol.optimized_values[i] = lp.variables[i].fixed_val;
+      else if( -9999.0 != lp.variables[i].init_val ) sol.optimized_values[i] = lp.variables[i].init_val;
+      else                                           sol.optimized_values[i] = lp.variables[i].lb;
+
+      sol.optimized_obj += lp.variables[i].obj_val * sol.optimized_values[i];
+    }
+  }
+
+  ilp_solution_type_t ret = c.isTimeout() ? SubOptimal : (OPTIMAL == ret ? Optimal : SubOptimal);
+  return ret;
+}
+
+#endif
+
 #ifdef USE_GUROBI
 #include "gurobi_c++.h"
 

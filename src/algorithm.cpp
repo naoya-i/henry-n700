@@ -1025,7 +1025,7 @@ bool _moduleCompileKb( command_option_t &cmd, vector<string> &args ) {
 
 bool _moduleProcessInferOptions( inference_configuration_t *p_out_con, command_option_t &cmd ) {
   
-  if( !has_key( cmd, 'd' ) ) cmd[ 'd' ] = "9999";
+  if( !has_key( cmd, 'd' ) ) cmd[ 'd' ] = "6";
   if( !has_key( cmd, 'T' ) ) cmd[ 'T' ] = "9999";
   if( !has_key( cmd, 't' ) ) cmd[ 't' ] = "1";
   if( !has_key( cmd, 'O' ) ) cmd[ 'O' ] = "";

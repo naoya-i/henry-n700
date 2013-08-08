@@ -29,8 +29,7 @@ ilp_solution_type_t function::solveLP_BnB(vector<lp_solution_t> *p_out_sols, con
     set_obj(p_lps, 1+i, lp.variables[i].obj_val);
   }
 
-  /* Set MIP starts. */
-  /* TODO. */
+  /* Set MIP starts. (... seems not supported.) */
 
   /* Create constraints. */
   set_add_rowmode(p_lps, TRUE);

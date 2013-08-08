@@ -1,13 +1,12 @@
 
-(B (=> (unhappy x) (exam x) ) )
-(B (=> (happy x) (exam x) ) )
+(B (name shopperGoes) (=>
+  (^ (plan-shopping x :0.6) (at x y :0.0) (store y :0.6))
+  (go-to x y)
+))
 
-(O (name happy) (label (^ (happy ?s) (exam ?s) (! (unhappy ?s) ) )) (^ (exam JOHN) ) )
+(B (name robberGoes) (=> (^ (plan-robbing x :0.6) (at x y :0.0) (store y :0.6))  (go-to x y) ) )
+(B (name robberUses) (=> (^ (plan-robbing x :0.6) (uses x y :0.0) (gun y :0.6)) (get x y) ) )
+(B (name hunterUses) (=> (^ (plan-hunting x :0.6) (uses x y :0.0) (gun y :0.6)) (get x y) ) )
 
-; 
-(O (name lingheu) (^ (john-nn x1) (kill-vb x1 x2) (mary-nn x3) (kill-vb x3 x4)) )
-(O (name lingheu2) (^ (john-nn x1) (kill-vb x1 x2) (john-nn x3) (kill-vb x3 x4)) )
-
-(B (=> (john-nn x) (man-nn x)) )
-(O (name lingheu3) (^ (john-nn x1) (kill-vb x1 x2) (man-nn x3) (hate-vb x3 x4)) )
-
+; Observation
+(O (^ (get John g) (gun g) (go-to John s) (store s) ) )

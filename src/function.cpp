@@ -325,7 +325,6 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
       if( p_out_pg->p_x_axiom[n_obs][axiom_str] > 0 ) continue;
 
       if( applied_axioms.end() != applied_axioms.find(axiom_str) ) continue;
-      applied_axioms.insert( axiom_str );
       
       V(5) cerr << TS() << axiom_str << " in " << ::join( p_out_pg->nodes[ n_obs ].axiom_used.begin(), p_out_pg->nodes[ n_obs ].axiom_used.end(), "/" ) << "?" << endl;
 
@@ -442,6 +441,8 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
         }
 
         /* Perform backward-chaining. */
+        applied_axioms.insert( axiom_str );
+        
         vector<int> backchained_literals;
         
         for( uint_t j=0; j<lhs_literals.size(); j++ ) {

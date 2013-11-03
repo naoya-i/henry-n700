@@ -731,7 +731,9 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
             (*p_out_pckb)[ lf.branches[1].lit.predicate ][ lf.branches[1].lit.terms.size() ].push_back( sr.stack.toString() );
             f_kb_modified = true;
           } else if( AndOperator == lf.branches[1].opr ) {
-            (*p_out_pckb)[ lf.branches[1].branches[0].lit.predicate ][ lf.branches[1].branches[0].lit.terms.size() ].push_back( sr.stack.toString() );
+            for(int l=0; l<lf.branches[1].branches.size(); l++)
+              (*p_out_pckb)[ lf.branches[1].branches[l].lit.predicate ][ lf.branches[1].branches[l].lit.terms.size() ].push_back( sr.stack.toString() );
+            
             f_kb_modified = true;
           } else {
             _SYNCHK(false, sr, "unsupported logical forms.");

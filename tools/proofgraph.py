@@ -1,4 +1,3 @@
-
 from lxml import etree
 from collections import defaultdict
 
@@ -261,7 +260,7 @@ def _outputDot(t, pg, pa):
 			lstr = "%s\\n(%s)\\n%s" % (lstr[0], ", ".join([_convCluster(x) for x in lstr[1:-1]]), prp)
 			lstr += "/%s" % lit.attrib["id"]
 		
-		nstr = "n%s [shape=\"none\", color=\"%s\", style=\"%s\", penwidth=\"1\", label=\"%s\", fontcolor=\"%s\", width=\"0.1\", height=\"0.01\", nodesep=0.75, nodesep-0.75]" % (
+		nstr = "n%s [shape=\"none\", color=\"%s\", style=\"%s\", penwidth=\"1\", label=\"%s\", fontcolor=\"%s\", width=\"0.1\", height=\"0.01\", nodesep=\"0.75\"]" % (
 			dig_id*1000+int(lit.attrib["id"]), def_bg_color,
 			"filled" if "yes" == lit.attrib["active"] else "", 
 			lstr,

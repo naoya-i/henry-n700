@@ -395,13 +395,18 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
         bool      f_inc = false;
 
         /* Produce substitution. */
+        bool f_me_in = false;
+        
         repeat(j, rhs_collections[i].first.size()) {
+          if(n_obs == rhs_collections[i].second[j]) f_me_in = true;
+          
           p_out_pg->p_x_axiom[rhs_collections[i].second[j]][axiom_str] = 1;
           V(5) cerr << TS() << rhs_collections[i].first[j].toString() << "~" << p_out_pg->nodes[rhs_collections[i].second[j]].toString() << endl;
           if( !getMGU( &theta, rhs_collections[i].first[j], p_out_pg->nodes[rhs_collections[i].second[j]].lit ) ) { f_inc = true; }
         }
 
-        if(f_inc) continue;
+        if(!f_me_in) { V(5) cerr << TS() << "Wuff! (me)" << endl; continue; }
+        if(f_inc) { V(5) cerr << TS() << "Wuff (inc)!" << endl; continue; }
 
         V(5) cerr << TS() << theta.toString() << endl;
         
@@ -444,6 +449,12 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
         applied_axioms.insert( axiom_str );
         
         vector<int> backchained_literals;
+        double rhs_cost = 0.0; 
+
+        repeat(j, rhs_collections[i].second.size()) {
+          rhs_cost += p_out_pg->nodes[rhs_collections[i].second[j]].lit.wa_number;
+          p_out_pg->p_x_axiom[rhs_collections[i].second[j]][axiom_str] = 1;
+        }
         
         for( uint_t j=0; j<lhs_literals.size(); j++ ) {
 
@@ -456,11 +467,7 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
           theta.apply( &lit );
           
           int    n_backchained;
-          double rhs_cost = 0.0; 
-          
-          repeat(k, rhs_collections[i].second.size())
-            rhs_cost += p_out_pg->nodes[rhs_collections[i].second[k]].lit.wa_number;
-          
+                    
           /* If the completely same node is found, then recycle it. */
           vector<int> recycles;
 

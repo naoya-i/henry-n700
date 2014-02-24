@@ -400,7 +400,7 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
         repeat(j, rhs_collections[i].first.size()) {
           if(n_obs == rhs_collections[i].second[j]) f_me_in = true;
           
-          p_out_pg->p_x_axiom[rhs_collections[i].second[j]][axiom_str] = 1;
+          //p_out_pg->p_x_axiom[rhs_collections[i].second[j]][axiom_str] = 1;
           V(5) cerr << TS() << rhs_collections[i].first[j].toString() << "~" << p_out_pg->nodes[rhs_collections[i].second[j]].toString() << endl;
           if( !getMGU( &theta, rhs_collections[i].first[j], p_out_pg->nodes[rhs_collections[i].second[j]].lit ) ) { f_inc = true; }
         }

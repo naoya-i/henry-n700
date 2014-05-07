@@ -462,7 +462,7 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
 
           /* Issue unknown variables */
           for( uint_t k=0; k<lit.terms.size(); k++ )
-            if( !theta.isApplied( lit.terms[k] ) ) theta.add( lit.terms[k], g_store.issueUnknown() );
+            if( !lit.terms[k].isConstant() && !theta.isApplied( lit.terms[k] ) ) theta.add( lit.terms[k], g_store.issueUnknown() );
           
           theta.apply( &lit );
           

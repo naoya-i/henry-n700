@@ -274,7 +274,8 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
 
       if( !sr.stack.isFunctor( "B" ) ) continue;
         
-      int i_lf = sr.stack.findFunctorArgument(ImplicationString), i_name = sr.stack.findFunctorArgument("name");
+      int i_lf = sr.stack.findFunctorArgument(ImplicationString), i_name = sr.stack.findFunctorArgument("name"),
+        i_disj = sr.stack.findFunctorArgument(FnAxiomDisjoint);
 
       if(-1 == i_lf) {
         int                i_inc     = sr.stack.findFunctorArgument(IncString); if(-1 == i_inc) continue;
@@ -320,6 +321,7 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
       /* For each clause that has the literal n_obs in its right-hand side, */
       logical_function_t lf( *sr.stack.children[i_lf] );
       string             axiom_str = lf.toString();
+      string             axiom_disj = -1 == i_disj ? "" : sr.stack.children[i_disj]->children[1]->getString();
       
       /* Already applied? */
       if( p_out_pg->p_x_axiom[n_obs][axiom_str] > 0 ) continue;
@@ -488,6 +490,7 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
             p_out_pg->nodes[n_backchained].rhs.insert(rhs_collections[i].second.begin(), rhs_collections[i].second.end());          
             p_out_pg->nodes[n_backchained].cond_neqs.insert(p_out_pg->nodes[n_backchained].cond_neqs.end(), cond_neqs.begin(), cond_neqs.end());
             p_out_pg->nodes[n_backchained].f_prohibited             = f_prohibited;;
+            p_out_pg->nodes[n_backchained].axiom_disj               = axiom_disj == "" ? p_out_pg->nodes[n_obs].axiom_disj : axiom_disj;
           
           } else {
 
@@ -515,6 +518,7 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
             p_out_pg->nodes[n_backchained].rhs.insert(rhs_collections[i].second.begin(), rhs_collections[i].second.end());          
             p_out_pg->nodes[n_backchained].cond_neqs.insert(p_out_pg->nodes[n_backchained].cond_neqs.end(), cond_neqs.begin(), cond_neqs.end());
             p_out_pg->nodes[n_backchained].f_prohibited             = f_prohibited;
+            p_out_pg->nodes[n_backchained].axiom_disj               = axiom_disj == "" ? p_out_pg->nodes[n_obs].axiom_disj : axiom_disj;
 
             V(5) cerr << TS() << log_head << "new Literal: " << p_out_pg->nodes[n_backchained].lit.toString() << endl;
           
@@ -528,6 +532,11 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
           pg_hypernode_t hn = p_out_pg->addHyperNode( backchained_literals );
           repeat( j, rhs_collections[i].second.size() )
             p_out_pg->addEdge( rhs_collections[i].second[j], hn, -1 != i_name ? (-1 != i_name ? sr.stack.children[i_name]->children[1]->getString() : "?") : "" );
+
+          if("" != axiom_disj) {
+            p_out_pg->axiom_disjoint_set[axiom_disj].insert(hn);
+            V(6) cerr << TS() << "disjoint: GROUP=" << axiom_disj << ": " << ::toString("%s:%s:", axiom_str.c_str(), theta.toString().c_str()) << endl;
+          }          
         }
       }
     }
@@ -948,6 +957,22 @@ bool function::convertToLP( linear_programming_problem_t *p_out_lp, lp_problem_m
     if(c.prohibited_literals.count(i) > 0) {
       p_out_lp->variables[_createNodeVar(p_out_lp, p_out_lprel, p_out_cache, &constants_unifiables, pg, i)].fixValue(0.0);
     }
+  }
+
+  /* DISJOINT AXIOMS. */
+  foreachc(axiom_disjoint_set_t, i, pg.axiom_disjoint_set) {
+    lp_constraint_t con_d(::toString("axdisj_%d", i), LessEqual, 1);
+
+    if(i->second.size() <= 1) continue;
+    
+    foreachc(unordered_set<int>, j, i->second)
+      con_d.push_back(_createConjVar(p_out_lp, p_out_lprel,
+                                     p_out_cache,
+                                     &constants_unifiables,
+                                     pg, 0,
+                                     *j), 1.0);
+
+    p_out_lp->addConstraint(con_d);
   }
   
   /* Factor: Inconsistent. */

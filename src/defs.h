@@ -41,6 +41,8 @@
 #define PrefixFixedWeight "!"
 #define PrefixInvisibleElement "$"
 
+#define FnAxiomDisjoint       "MX"
+
 #define EqBias            0.0001
 #define InvalidCutoff     -9999.0
 #define InvalidFixedValue -9999.0
@@ -581,6 +583,7 @@ struct pg_node_t {
   unordered_set<string> axiom_used, axiom_name_used;
   unordered_set<int>    nodes_appeared, parent_node, rhs;
   bool                  f_prohibited, f_removed;
+  string                axiom_disj;
   
   vector<pair<store_item_t, store_item_t> > cond_neqs;
   
@@ -840,6 +843,8 @@ struct explanation_t {
   
 };
 
+typedef unordered_map<string, unordered_set<int> >   axiom_disjoint_set_t;
+
 struct proof_graph_t {
   vector<pg_node_t>     nodes;
   vector<pair<pair<int, int>, unifier_t> > mutual_exclusive_nodes;
@@ -858,6 +863,7 @@ struct proof_graph_t {
   pg_term_map_t               t2n;
   sqlite3                    *p_db;
   sqlite3_stmt               *p_ins_stmt;
+  axiom_disjoint_set_t  axiom_disjoint_set;
 
   inline void initializeDatabase() {
 

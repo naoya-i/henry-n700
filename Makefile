@@ -12,6 +12,10 @@ CFLAGS+=-I/opt/localsolver_2_1/include
 LDFLAGS+=-llocalsolver
 endif
 
+ifneq ($(shell grep -E '^\#define USE_LPSOLVE' src/defs.h),)
+LDFLAGS+=-llpsolve55
+endif
+
 %.o: %.cpp
 	$(CC) $(CFLAGS) $(OPTIONS) -c $< -o $@
 

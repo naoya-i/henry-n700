@@ -1,8 +1,8 @@
 #pragma once
 
-//#define USE_GUROBI
+#define USE_GUROBI
 //#define USE_LOCALSOLVER
-#define USE_LPSOLVE
+//#define USE_LPSOLVE
 
 #include <sqlite3.h>
 

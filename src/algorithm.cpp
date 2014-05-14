@@ -404,8 +404,12 @@ void algorithm::learn( score_function_t *p_out_sfunc, const learn_configuration_
           wrong_best.push_back(make_pair(expls_current[k].fv, expls_current[k].loss));
 
         weight_vector_t w_new;
+        #ifdef USE_GUROBI
         algorithm::kbestMIRA(&w_new, p_out_sfunc->weights, expls_correct[0].fv, wrong_best, c);
-
+        #else
+        cerr << "WARNING! Learning is not supported in lpsolve environment." << endl;
+        #endif
+        
         /* SHOW SOME STATISTICS. */
         double       f_vecdiff = 0.0;
         stringstream ss_content;

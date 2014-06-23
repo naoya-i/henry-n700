@@ -39,7 +39,7 @@ def cbScoreFunction( ctx ):
 
 			fc_cooc				 = ["p%d" % p[2], "p%d" % q[2]]
 			fc_cooc_vuall  = fc_cooc + (["c%s %s" % (p[1][i], q[1][i]) for i in xrange(len(p[1]))] if len(p[1]) == len(q[1]) else [])
-
+			
 			#
 			# EXPLANATION FOR p.
 			if repr(p[2]) in q[4].split(","):
@@ -66,7 +66,10 @@ def cbScoreFunction( ctx ):
 
 			# CLASSICAL UNIFICATION.
 			if _samePreds() and (p[5] > q[5] or (p[5] == q[5] and p[2] > q[2])):
-				dnf_expl += [fc_cooc_vuall]
+				for i in xrange(len(p[1])):
+					if p[1][i] != q[1][i] and p[1][i][0].isupper() and q[1][i][0].isupper(): break
+				else:
+					dnf_expl += [fc_cooc_vuall]
 
 		# GROUPING BY THE CONJUNCTIONS.
 		dnf_expl += expl.values()

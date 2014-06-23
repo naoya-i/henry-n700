@@ -586,7 +586,7 @@ struct pg_node_t {
   bool                  f_prohibited, f_removed;
   string                axiom_disj;
   
-  vector<pair<store_item_t, store_item_t> > cond_neqs;
+  vector<pair<store_item_t, store_item_t> > cond_neqs, cond_eqs;
   
   inline pg_node_t( const literal_t &_lit, pg_node_type_t _type, int _n ) :
     n(_n), depth(0), obs_node(-1), lit( _lit ), type( _type ), f_prohibited(false), f_removed(false) {};

@@ -51,15 +51,15 @@ inline string _createSQLquery( unordered_map<int, string> *p_out_vars, logical_f
       string searchstr = g_store.claim(cnf_lf.branches[j].lit.terms[k]);
       if( string::npos != searchstr.find("%") ) searchstr.replace( searchstr.find("%"), 2, "%" );
       if( !f_all_placeholder && "%" != searchstr ) query_where.push_back( ::toString("p%d",1+j) + "." + ::toString("arg%d",1+k) + (string::npos == g_store.claim(cnf_lf.branches[j].lit.terms[k]).find("%") ? "='" : " LIKE '")+ (searchstr) +"'" );
-      argeq[ cnf_lf.branches[j].lit.terms[k] ].insert( ::toString("p%d",1+j) + "." + ::toString("arg%d",1+k) );
+      //argeq[ cnf_lf.branches[j].lit.terms[k] ].insert( ::toString("p%d",1+j) + "." + ::toString("arg%d",1+k) );
     }
     
-    repeat( k, MaxArguments ) {
-      if( k < cnf_lf.branches[j].lit.terms.size() )
-        query_where.push_back( ::toString("p%d",1+j) + "." + ::toString("arg%d", 1+k) + "!=''" );
-      else if( !g_store.isEqual( cnf_lf.branches[j].lit.terms[ cnf_lf.branches[j].lit.terms.size()-1 ], "*" ) )
-        query_where.push_back( ::toString("p%d",1+j) + "." + ::toString("arg%d", 1+k) + "=''" );
-    }
+    // repeat( k, MaxArguments ) {
+    //   if( k < cnf_lf.branches[j].lit.terms.size() )
+    //     query_where.push_back( ::toString("p%d",1+j) + "." + ::toString("arg%d", 1+k) + "!=''" );
+    //   else if( !g_store.isEqual( cnf_lf.branches[j].lit.terms[ cnf_lf.branches[j].lit.terms.size()-1 ], "*" ) )
+    //     query_where.push_back( ::toString("p%d",1+j) + "." + ::toString("arg%d", 1+k) + "=''" );
+    // }
 
   }
 
@@ -340,7 +340,7 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
       
       if( Literal != lf.branches[1].opr ) { if( lf.branches[1].branches.size() > 1 ) {
           /* Multiple RHS literals. */
-          string             query    = _createSQLquery( NULL, lf.branches[1], true ); 
+          string             query    = _createSQLquery( NULL, lf.branches[1], true );
           sqlite3_stmt      *p_stmt   = NULL;
           char              *p_val    = NULL;
           uint_t             num_cols = 0;
@@ -395,6 +395,7 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
       repeat(i, rhs_collections.size()) {
         unifier_t theta;
         bool      f_inc = false;
+        unordered_map<string, unordered_set<string> > mapsVarConv;
 
         /* Produce substitution. */
         bool f_me_in = false;
@@ -405,6 +406,9 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
           //p_out_pg->p_x_axiom[rhs_collections[i].second[j]][axiom_str] = 1;
           V(5) cerr << TS() << rhs_collections[i].first[j].toString() << "~" << p_out_pg->nodes[rhs_collections[i].second[j]].toString() << endl;
           if( !getMGU( &theta, rhs_collections[i].first[j], p_out_pg->nodes[rhs_collections[i].second[j]].lit ) ) { f_inc = true; }
+          
+          for(unsigned int k=0; k<rhs_collections[i].first[j].terms.size(); k++)
+            mapsVarConv[g_store.claim(rhs_collections[i].first[j].terms[k])].insert(g_store.claim(p_out_pg->nodes[rhs_collections[i].second[j]].lit.terms[k]));
         }
 
         if(!f_me_in) { V(5) cerr << TS() << "Wuff! (me)" << endl; continue; }
@@ -422,6 +426,17 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
             lhs_literals.push_back( lf.branches[0].branches[j].lit );
         }
 
+        /* FOR EQUALITY. */
+        vector<pair<store_item_t, store_item_t> > cond_eqs;
+        for(unordered_map<string, unordered_set<string> >::const_iterator j=mapsVarConv.begin(); mapsVarConv.end()!=j; ++j) {
+          for(unordered_set<string>::const_iterator k=j->second.begin(); j->second.end()!=k; ++k) {
+            for(unordered_set<string>::const_iterator l=j->second.begin(); j->second.end()!=l; ++l) {
+              if(*k >= *l) continue;
+              cond_eqs.push_back(make_pair(g_store.cashier(*k), g_store.cashier(*l)));
+            }
+          }
+        }
+        
         /* Check if this lhs matches the condition stated by the given label. */
         bool f_prohibited = false;
         if( LabelGiven == c.objfunc ) {
@@ -489,6 +504,7 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
             p_out_pg->nodes[n_backchained].rhs.insert(n_obs);
             p_out_pg->nodes[n_backchained].rhs.insert(rhs_collections[i].second.begin(), rhs_collections[i].second.end());          
             p_out_pg->nodes[n_backchained].cond_neqs.insert(p_out_pg->nodes[n_backchained].cond_neqs.end(), cond_neqs.begin(), cond_neqs.end());
+            p_out_pg->nodes[n_backchained].cond_eqs.insert(p_out_pg->nodes[n_backchained].cond_eqs.end(), cond_eqs.begin(), cond_eqs.end());
             p_out_pg->nodes[n_backchained].f_prohibited             = f_prohibited;;
             p_out_pg->nodes[n_backchained].axiom_disj               = axiom_disj == "" ? p_out_pg->nodes[n_obs].axiom_disj : axiom_disj;
           
@@ -517,15 +533,14 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
             p_out_pg->nodes[n_backchained].rhs.insert(n_obs);
             p_out_pg->nodes[n_backchained].rhs.insert(rhs_collections[i].second.begin(), rhs_collections[i].second.end());          
             p_out_pg->nodes[n_backchained].cond_neqs.insert(p_out_pg->nodes[n_backchained].cond_neqs.end(), cond_neqs.begin(), cond_neqs.end());
+            p_out_pg->nodes[n_backchained].cond_eqs.insert(p_out_pg->nodes[n_backchained].cond_eqs.end(), cond_eqs.begin(), cond_eqs.end());
             p_out_pg->nodes[n_backchained].f_prohibited             = f_prohibited;
             p_out_pg->nodes[n_backchained].axiom_disj               = axiom_disj == "" ? p_out_pg->nodes[n_obs].axiom_disj : axiom_disj;
 
             V(5) cerr << TS() << log_head << "new Literal: " << p_out_pg->nodes[n_backchained].lit.toString() << endl;
-          
           }
           
           backchained_literals.push_back( n_backchained );
-        
         }
 
         if( backchained_literals.size() > 0 ) {
@@ -609,6 +624,10 @@ inline int _createNodeVar( linear_programming_problem_t *p_out_lp, lp_problem_ma
     con_mrhs.rhs -= 1.0;
   }
 
+  repeat(i, pg.nodes[n].cond_eqs.size()) {
+    con_mrhs.push_back(_createCorefVar(p_out_lp, p_out_lprel, p_out_cache, p_out_cu, pg.nodes[n].cond_eqs[i].first, pg.nodes[n].cond_eqs[i].second, true, opt_level), 1.0);
+  }
+  
   if(con_mrhs.vars.size() > 0) {
     con_mrhs.push_back(v_h, -1.0 * con_mrhs.vars.size());
     p_out_lp->addConstraint(con_mrhs);

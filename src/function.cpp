@@ -428,14 +428,23 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
 
         /* FOR EQUALITY. */
         vector<pair<store_item_t, store_item_t> > cond_eqs;
+        bool fNotApplicable = false;
+        
         for(unordered_map<string, unordered_set<string> >::const_iterator j=mapsVarConv.begin(); mapsVarConv.end()!=j; ++j) {
           for(unordered_set<string>::const_iterator k=j->second.begin(); j->second.end()!=k; ++k) {
             for(unordered_set<string>::const_iterator l=j->second.begin(); j->second.end()!=l; ++l) {
               if(*k >= *l) continue;
+              if(g_store.isConstant(g_store.cashier(*k)) && g_store.isConstant(g_store.cashier(*l))) {
+                fNotApplicable = true;
+                continue;
+              }
+              
               cond_eqs.push_back(make_pair(g_store.cashier(*k), g_store.cashier(*l)));
             }
           }
         }
+
+        if(fNotApplicable) continue;
         
         /* Check if this lhs matches the condition stated by the given label. */
         bool f_prohibited = false;

@@ -402,7 +402,7 @@ ilp_solution_type_t function::solveLP_BnB(vector<lp_solution_t> *p_out_sols, con
     case GreaterEqual: { model.addConstr( expr_lin, GRB_GREATER_EQUAL, con.rhs, con.name.substr(0, 32) ); break; }
     case Range: {        model.addRange( expr_lin, con.lhs, con.rhs, con.name.substr(0, 32) );            break; }
     default:             cerr << TS() << "SolveLP_BnB: Unknown constraint type." << endl;
-    }, lp.constraints[i].toString( lp.variables )
+    }, lp.constraints[i].name + ":" + lp.constraints[i].toString( lp.variables )
                   );
   }
 

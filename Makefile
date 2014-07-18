@@ -4,7 +4,7 @@ CC=g++
 LDFLAGS=-lpython2.7 -lsqlite3
 
 ifneq ($(shell grep -E '^\#define USE_GUROBI' src/defs.h),)
-LDFLAGS+=-lgurobi_c++ -lgurobi51 -lpthread
+LDFLAGS+=-lgurobi_c++ -lgurobi56 -lpthread
 endif
 
 ifneq ($(shell grep -E '^\#define USE_LOCALSOLVER' src/defs.h),)

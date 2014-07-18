@@ -351,10 +351,19 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
           if( SQLITE_OK != sqlite3_prepare_v2(p_out_pg->p_db, query.c_str(), -1, &p_stmt, 0) ) { E( "Invalid query: " << query.c_str() ); continue; }
           if( 0 == (num_cols = sqlite3_column_count(p_stmt)) ) sqlite3_finalize(p_stmt);
           else {
-            while( SQLITE_ROW == sqlite3_step(p_stmt) ) {              
+            while( SQLITE_ROW == sqlite3_step(p_stmt) ) {
               repeat( k, lf.branches[1].branches.size() ) {
                 if( NULL != (p_val = (char *)sqlite3_column_text(p_stmt, (MaxBasicProp+MaxArguments)*k)) ) {                  
-                  if( !getMGU( &theta, lf.branches[1].branches[k].lit, p_out_pg->nodes[ atoi(p_val) ].lit ) ) goto BED;
+                  V(5) cerr << TS()
+                            << "EXAMINING... "
+                            << lf.branches[1].branches[k].lit.toString() << "~" << p_out_pg->nodes[ atoi(p_val) ].lit.toString()
+                            << endl;
+                  
+                  if( !getMGU( &theta, lf.branches[1].branches[k].lit, p_out_pg->nodes[ atoi(p_val) ].lit ) ) {
+                    V(5) cerr << TS() << "NOT COOL: getMGU() failed." << endl;
+                    goto BED;
+                  }
+                  
                   rhs_candidates.push_back( atoi(p_val) );
                   rhs_literals.push_back(lf.branches[1].branches[k].lit);
                 }
@@ -362,10 +371,15 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, variable_cl
               
               {
                 unordered_set<int> aobss(rhs_candidates.begin(), rhs_candidates.end());
-                if(aobss.size() != rhs_candidates.size()) goto BED;
+                if(aobss.size() != rhs_candidates.size()) {
+                  V(5) cerr << TS() << "NOT COOL: aoboss failed." << endl;
+                  goto BED;
+                }
               }
-              
+
+              V(5) cerr << TS() << "COOL." << endl;
               rhs_collections.push_back(make_pair(rhs_literals, rhs_candidates));
+              rhs_candidates.clear(); rhs_literals.clear();
               continue;
               
             BED:

@@ -345,7 +345,7 @@ def _outputDot(t, pg, pa):
 			"solid" if "yes" == unif.attrib["active"] else "dashed",
 			"#ff0000" if "yes" == unif.attrib["active"] else "#999999", "#bb0000" if "yes" == unif.attrib["active"] else "#bbaaaa")]
 
-	print "\n".join(set(edges)) 
+	print "\n".join(set(edges)).encode('utf-8')
 	
 	def coloring( nodes ):
 		return [n if is_explained.has_key( n.split( " " )[0][1:] ) else n.replace( "#000000", "#bb0000" ).replace("color=\"%s\"" % def_bg_color, "color=\"#ffeeee\"") for n in nodes]

@@ -986,6 +986,7 @@ struct knowledge_base_t {
   int                    num_branches;
   
   unordered_map<string, unordered_map<string, unordered_set<int> > > bc_matrix;
+  vector<logical_function_t> inconsistents;
 
   unordered_set<string> do_not_unifies, do_not_cares, search_constant;
   vector<pcrecpp::RE>   do_not_unifies_regex, do_not_cares_regex, search_constant_regex;
@@ -1301,6 +1302,7 @@ struct proof_graph_t {
   unordered_set<string> used_axiom_tokens, used_axiom_types;
   unordered_set<string> observed_variables, backchained_on;
   unordered_set<string> already_ua_produced;
+    
   axiom_disjoint_set_t  axiom_disjoint_set;
   string                obs;
   int                   n_start;

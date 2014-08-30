@@ -773,6 +773,9 @@ bool _moduleProcessInput( vector<training_data_t>   *p_out_t,
           i_lf = sr.stack.findFunctorArgument( ImplicationString ),
           i_inc = sr.stack.findFunctorArgument( IncString ),
           i_name = sr.stack.findFunctorArgument(FnName);
+
+        if(-1 != i_inc)
+          p_out_kb->inconsistents.push_back(logical_function_t(*sr.stack.children[i_inc]));
         
         _SYNCHK(-1 != i_lf || -1 != i_inc, sr, "no logical connectors found.");
 

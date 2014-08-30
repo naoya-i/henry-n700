@@ -1,4 +1,3 @@
-
 #include "defs.h"
 
 #include <math.h>
@@ -1043,7 +1042,9 @@ bool _moduleProcessInferOptions( inference_configuration_t *p_out_con, command_o
   p_out_con->scaling_score_func   = has_key(cmd, 's');
   p_out_con->no_prior             = has_key(cmd, 'z');
   p_out_con->no_explained         = has_key(cmd, 'I');
+  p_out_con->no_apc4rhs           = has_key(cmd, 'R');
   p_out_con->no_pruning           = has_key(cmd, 'n');
+  p_out_con->implybreak           = has_key(cmd, 'L');
 
   if(has_key(cmd, 'X')) {
     p_out_con->prohibited_literals.insert(atoi(cmd['X'].c_str()));
@@ -1138,7 +1139,7 @@ int main( int argc, char **pp_args ) {
 
   command_option_t cmd;
   vector<string>   args;
-  function::getParsedOption( &cmd, &args, "IzsUDh:m:uv:i:r:b:C:N:nt:T:w:E:O:o:p:d:c:e:f:k:S:X:x:", argc, pp_args );
+  function::getParsedOption( &cmd, &args, "LIzsUDh:m:uv:i:b:C:N:nt:T:w:E:O:o:p:d:c:e:f:k:S:X:x:R", argc, pp_args );
 
   if( !has_key( cmd, 'm' ) ) { cerr << str_usage << endl; return 1; }
   srand(has_key(cmd, 'r') ? atoi(cmd['r'].c_str()) : time(NULL));

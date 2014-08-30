@@ -261,7 +261,7 @@ def _outputDot(t, pg, pa):
 			lstr = "%s\\n(%s)\\n%s" % (lstr[0], ", ".join([_convCluster(x) for x in lstr[1:-1]]), prp)
 			lstr += "/%s" % lit.attrib["id"]
 		
-		nstr = "n%s [shape=\"none\", color=\"%s\", style=\"%s\", penwidth=\"1\", label=\"%s\", fontcolor=\"%s\", width=\"0.1\", height=\"0.01\", nodesep=0.75, nodesep-0.75]" % (
+		nstr = "n%s [shape=\"none\", color=\"%s\", style=\"%s\", penwidth=\"1\", label=\"%s\", fontcolor=\"%s\", width=\"0.1\", height=\"0.01\", nodesep=\"0.75\"]" % (
 			dig_id*1000+int(lit.attrib["id"]), def_bg_color,
 			"filled" if "yes" == lit.attrib["active"] else "", 
 			lstr,
@@ -296,6 +296,7 @@ def _outputDot(t, pg, pa):
 
 			if len( lhs ) > 1:
 				n_lfc = "_".join([x.strip() for x in lhs])
+				#n_lfc += 1
 				
 				print "lfc%s [label=\"^\", style=\"%s\", width=\"0.01\", height=\"0.01\"]" % (n_lfc, line_style)
 				edges += ["lfc%s -> n%s [style=\"%s\", color=\"%s\", penwidth=%d, weight=%f]" % (
@@ -341,7 +342,7 @@ def _outputDot(t, pg, pa):
 		if not pa.potential and "yes" != unif.attrib["active"]: continue
 		
 		edges += ["n%s -> n%s [weight=3.0, label=\"%s\", style=\"%s\", fontcolor=\"%s\" color=\"%s\"]" % (
-			n1, n2, _convCluster(unif.attrib["unifier"]),
+			n1, n2, _convCluster(", ".join(set(unif.attrib["unifier"].split(", ")))),
 			"solid" if "yes" == unif.attrib["active"] else "dashed",
 			"#ff0000" if "yes" == unif.attrib["active"] else "#999999", "#bb0000" if "yes" == unif.attrib["active"] else "#bbaaaa")]
 

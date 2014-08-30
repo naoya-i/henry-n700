@@ -10,7 +10,7 @@ CFLAGS+=-fopenmp
 endif
 
 ifneq ($(shell grep -E '^\#define USE_GUROBI' src/defs.h),)
-LDFLAGS+=-lgurobi_c++ -lgurobi55 -lpthread
+LDFLAGS+=-lgurobi_c++ -lgurobi56 -lpthread
 endif
 
 ifneq ($(shell grep -E '^\#define USE_LOCALSOLVER' src/defs.h),)

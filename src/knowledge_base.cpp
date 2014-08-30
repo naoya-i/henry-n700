@@ -279,6 +279,7 @@ bool knowledge_base_t::writeBcMatrix() {
 }
 
 bool knowledge_base_t::registerIncAxiom(const sexp_stack_t &srline, const sexp_stack_t &sr) {
+  mxpairs.push_back(make_pair(literal_t(*sr.children[1]), literal_t(*sr.children[2])));
   return registerAxiom(srline, sr, 1) && registerAxiom(srline, sr, 2);
 }
 

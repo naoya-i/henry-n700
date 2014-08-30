@@ -1,9 +1,9 @@
 #pragma once
 
 #define USE_OMP
-//#define USE_GUROBI
+#define USE_GUROBI
 //#define USE_LOCALSOLVER
-#define USE_LPSOLVE
+//#define USE_LPSOLVE
 
 #include <sqlite3.h>
 #include <cdb.h>
@@ -29,6 +29,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 
+#include <sys/resource.h>
 #include <sys/time.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -856,7 +857,7 @@ struct lp_problem_mapping_t {
   unordered_map<int, int>          hn2v;
   unordered_map<int, int>          n2lc;
   unordered_map<store_item_t, int> vc2v;
-  pairwise_vars_t                  pp2v;
+  pairwise_vars_t                  pp2v, eq2v;
 
   vector<int>    v_loss;
   vector<string> s_loss;
@@ -973,8 +974,9 @@ struct explanation_t {
 };
 
 struct knowledge_base_t {
-  int                    context_pruning_cdb;
+  int context_pruning_cdb;
   vector<unordered_set<int> >   word_docs;
+  vector<pair<literal_t,literal_t> > mxpairs;
   
   sqlite3               *p_db;
   sqlite3_stmt          *p_ins_stmt;
@@ -1078,7 +1080,7 @@ struct knowledge_base_t {
 
     repeat(i, do_not_unifies_regex.size())
       if(do_not_unifies_regex[i].FullMatch(s)) return false;
-
+    
     return true;
   }
 
@@ -1259,7 +1261,7 @@ struct inference_configuration_t {
   unordered_map<string, double>  sol_cache;
   unordered_set<int>             prohibited_literals, hypothesized_literals;
   bool                           no_pruning, use_cache, ignore_weight, explanation_disjoint, use_only_user_score, fix_user_weight, scaling_score_func,
-    no_prior, no_explained;
+    no_prior, no_explained, implybreak, no_apc4rhs;
   uint_t                         n_start;
 
   /* For cutting plane */
@@ -1271,10 +1273,16 @@ struct inference_configuration_t {
     loss(1.0), p_sfunc( &s ), initial_label_index(99999), output_info(""), scaling_score_func(false),
     method(LocalSearch), objfunc(Cost), nbthreads(8), explanation_disjoint(false),
     cpi_max_iteration(9999), cpi_timelimit(9999), n_start(0), use_only_user_score(false), fix_user_weight(false),
-    no_prior(false), no_explained(false), no_pruning(false)
+    no_prior(false), no_explained(false), no_pruning(false), no_apc4rhs(false)
   {};
 
-  inline bool isTimeout() const { return getTimeofDaySec() - timestart > timelimit; }
+  inline bool isMemoryGood() const {
+    /* struct rusage usage; */
+    /* getrusage(RUSAGE_SELF, &usage); */
+    return true;
+  }
+  
+  inline bool isTimeout() const { return !isMemoryGood() || (getTimeofDaySec() - timestart > timelimit); }
   inline bool isOutput(const string &option) const { return string::npos != output_info.find(option); }
 };
 
@@ -1987,6 +1995,14 @@ namespace function {
       p_out_indices->insert(iter_f->first);
   }
 
+  inline bool doesMGUimply(const unifier_t &uni, store_item_t &x, store_item_t &y) {
+    for(int i=0; i<uni.substitutions.size(); i++) {
+      if((uni.substitutions[i].terms[0] == x && uni.substitutions[i].terms[1] == y) ||
+         (uni.substitutions[i].terms[0] == y && uni.substitutions[i].terms[1] == x)) return true;
+    }
+    return false;
+  }
+  
   inline bool getMGU( unifier_t *p_out_u, const literal_t &p1, const literal_t &p2, bool f_skip = false, bool f_check_only = false ) {
     if(p1.predicate != p2.predicate) return false;
     if(p1.terms.size() != p2.terms.size()) return false;

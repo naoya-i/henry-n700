@@ -29,7 +29,7 @@ ilp_solution_type_t function::solveLP_BnB(vector<lp_solution_t> *p_out_sols, con
     set_obj(p_lps, 1+i, lp.variables[i].obj_val);
   }
 
-  /* Set MIP starts. (... seems not supported.) */
+  /* Set MIP starts. (... seems not supported in lpsolve.) */
 
   /* Create constraints. */
   set_add_rowmode(p_lps, TRUE);
@@ -38,11 +38,19 @@ ilp_solution_type_t function::solveLP_BnB(vector<lp_solution_t> *p_out_sols, con
     if(!lp.constraints[i].is_active || lp.constraints[i].is_lazy) continue;
 
     const lp_constraint_t &con = lp.constraints[i];
-    vector<int> vars = con.vars;
-    vector<double> coes = con.coes;
+    unordered_map<int, double> normalizedMapping;
 
-    repeat(j, vars.size()) vars[j]++;
+    for(int j=0; j<con.vars.size(); j++)
+      normalizedMapping[1+con.vars[j]] += con.coes[j];
 
+    vector<int> vars;
+    vector<double> coes;
+
+    for(unordered_map<int, double>::iterator j=normalizedMapping.begin(); normalizedMapping.end()!=j; ++j) {
+      vars.push_back(j->first);
+      coes.push_back(j->second);
+    }
+      
     switch( con.opr ) {
     case Equal: {
       add_constraintex(p_lps, vars.size(), &coes[0], &vars[0], EQ, con.lhs);
@@ -51,11 +59,15 @@ ilp_solution_type_t function::solveLP_BnB(vector<lp_solution_t> *p_out_sols, con
       add_constraintex(p_lps, vars.size(), &coes[0], &vars[0], LE, con.rhs);
       break; }
     case GreaterEqual: {
-      add_constraintex(p_lps, vars.size(), &coes[0], &vars[0], GE, con.lhs);
+      add_constraintex(p_lps, vars.size(), &coes[0], &vars[0], GE, con.rhs);
       break; }
     case Range: {
-      add_constraintex(p_lps, vars.size(), &coes[0], &vars[0], LE, con.rhs);
-      add_constraintex(p_lps, vars.size(), &coes[0], &vars[0], GE, con.lhs);
+      if(con.rhs == con.lhs)
+        add_constraintex(p_lps, vars.size(), &coes[0], &vars[0], EQ, con.lhs);
+      else {
+        add_constraintex(p_lps, vars.size(), &coes[0], &vars[0], LE, con.rhs);
+        add_constraintex(p_lps, vars.size(), &coes[0], &vars[0], GE, con.lhs);
+      }
       break; }
     default:
       cerr << TS() << "SolveLP_BnB: Unknown constraint type." << endl;
@@ -64,6 +76,8 @@ ilp_solution_type_t function::solveLP_BnB(vector<lp_solution_t> *p_out_sols, con
 
   set_add_rowmode(p_lps, FALSE);
 
+  V(2) cerr << TS() << "Start solving the ILP..." << endl;
+  
   /* State a maximization objective. */
   set_maxim(p_lps);
   set_timeout(p_lps, c.timelimit);
@@ -79,6 +93,8 @@ ilp_solution_type_t function::solveLP_BnB(vector<lp_solution_t> *p_out_sols, con
     throw "Not implemented.";
 
   } else {
+    print_lp(p_lps);
+    
     signal( SIGINT, _cb_stop_ilp );
     ret_lps = solve(p_lps);
     signal( SIGINT, catch_int );
@@ -361,6 +377,8 @@ ilp_solution_type_t function::solveLP_BnB(vector<lp_solution_t> *p_out_sols, con
     }, lp.constraints[i].toString( lp.variables )
                   );
   }
+
+  V(2) cerr << TS() << "Start solving the ILP..." << endl;
   
   /* State a maximization objective. */
   p_model->set( GRB_IntAttr_ModelSense, GRB_MAXIMIZE );
@@ -797,7 +815,7 @@ void algorithm::kbestMIRA(sparse_vector_t *p_out_new, sparse_vector_t *p_out_dif
 
 int lp_inference_cache_t::createNodeVar(int n, bool f_brand_new) {
   if(-1 == n) return -1;
-
+  
   int& v_h = lprel.n2v[n];
 
   if( 0 != v_h ) return v_h;
@@ -805,6 +823,13 @@ int lp_inference_cache_t::createNodeVar(int n, bool f_brand_new) {
 
   v_h = lp.addVariable(lp_variable_t( "h_" + pg.nodes[n].toString() ));
 
+  if(pg.nodes[n].lit.predicate == PredicateSubstitution) {
+    if(pg.nodes[n].lit.terms[0] == pg.nodes[n].lit.terms[1] ||
+       (pg.nodes[n].lit.terms[0].isConstant() && pg.nodes[n].lit.terms[1].isConstant())) {
+      lp.variables[v_h].fixValue(0.0);
+    }
+  }
+    
   lp_constraint_t con_mrhs("mrhs", GreaterEqual, 0);
 
   if(ObservableNode == pg.nodes[n].type || LabelNode == pg.nodes[n].type) {
@@ -820,8 +845,9 @@ int lp_inference_cache_t::createNodeVar(int n, bool f_brand_new) {
     }
   } else if(2 <= pg.nodes[n].rhs.size()) {
     /* Multiple RHS? */
-    foreachc(unordered_set<int>, r, pg.nodes[n].rhs)
+    foreachc(unordered_set<int>, r, pg.nodes[n].rhs) {
       con_mrhs.push_back(createNodeVar(*r), 1.0);
+    }
   }
 
   repeat(i, pg.nodes[n].cond_neqs.size()) {
@@ -837,7 +863,7 @@ int lp_inference_cache_t::createNodeVar(int n, bool f_brand_new) {
 
   if(con_mrhs.vars.size() > 0) {
     con_mrhs.push_back(v_h, -1.0 * con_mrhs.vars.size());
-    //p_out_lp->addConstraint(con_mrhs);
+    lp.addConstraint(con_mrhs);
   }
 
   /* COST OF HYPOTHESIS. */
@@ -1010,7 +1036,7 @@ int lp_inference_cache_t::createConsistencyConstraint(int _n1, int _n2, const un
   bool             f_fails = false;
 
   repeat(j, theta.substitutions.size()) {
-    if(theta.substitutions[j].terms[0] == theta.substitutions[j].terms[1]) continue;
+    //if(theta.substitutions[j].terms[0] == theta.substitutions[j].terms[1]) continue;
     if(theta.substitutions[j].terms[0].isConstant() && theta.substitutions[j].terms[1].isConstant() &&
        theta.substitutions[j].terms[0] != theta.substitutions[j].terms[1]) { f_fails = true; break; }
 

@@ -12,8 +12,7 @@ using namespace function;
 
 bool _query(void (*p_callback)(const vector<int>&, void*),
             void *p_context, const proof_graph_t &pg, int n_current_pg_size, const inference_configuration_t &c, const score_function_t::function_unit_t &unit,
-            vector<int> *p_stack=NULL, uint_t current_stack=0, bool f_mirror=false) {
-
+            vector<int> *p_stack=NULL, uint_t current_stack=0, bool f_mirror=false, bool f_ignoreCond=false) {
 
   if(c.isTimeout()) return false;
   
@@ -23,7 +22,7 @@ bool _query(void (*p_callback)(const vector<int>&, void*),
       repeat(i, unit.lf.branches.size()) {}
     } else if(AndOperator == unit.lf.opr) {
       vector<int> s;
-      if(!_query(p_callback, p_context, pg, n_current_pg_size, c, unit, &s, 0))
+      if(!_query(p_callback, p_context, pg, n_current_pg_size, c, unit, &s, 0, f_mirror, f_ignoreCond))
         return false;
     }
 
@@ -56,6 +55,9 @@ bool _query(void (*p_callback)(const vector<int>&, void*),
         }
       } }
   }
+
+  if(f_ignoreCond)
+    conditions.clear();
   
   if(0 == conditions.size()) {
     
@@ -80,7 +82,7 @@ bool _query(void (*p_callback)(const vector<int>&, void*),
         
         vector<int> next_stack(stack);
         next_stack.push_back((*p_nodes)[i]);
-        if(!_query(p_callback, p_context, pg, n_current_pg_size, c, unit, &next_stack, current_stack+1)) return false;
+        if(!_query(p_callback, p_context, pg, n_current_pg_size, c, unit, &next_stack, current_stack+1, f_mirror, f_ignoreCond)) return false;
       }
     }
     
@@ -117,14 +119,14 @@ bool _query(void (*p_callback)(const vector<int>&, void*),
       
       vector<int> next_stack(stack);
       next_stack.push_back(*i);
-      if(!_query(p_callback, p_context, pg, n_current_pg_size, c, unit, &next_stack, current_stack+1)) return false;
+      if(!_query(p_callback, p_context, pg, n_current_pg_size, c, unit, &next_stack, current_stack+1, f_mirror, f_ignoreCond)) return false;
     }
   }
 
   if(!f_mirror && (unit.lf.branches[current_stack].lit.predicate == "=" || unit.lf.branches[current_stack].lit.predicate == "!=")) {
     score_function_t::function_unit_t swapped_unit(unit.name, unit.lf, unit.weight);
     swap(swapped_unit.lf.branches[current_stack].lit.terms[0], swapped_unit.lf.branches[current_stack].lit.terms[1]);
-    if(!_query(p_callback, p_context, pg, n_current_pg_size, c, swapped_unit, &stack, current_stack, true)) return false;
+    if(!_query(p_callback, p_context, pg, n_current_pg_size, c, swapped_unit, &stack, current_stack, true, f_ignoreCond)) return false;
   }
   
   return true;
@@ -417,7 +419,9 @@ bool function::enumeratePotentialElementalHypotheses(proof_graph_t *p_out_pg, co
 }
 
 bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, int n_current_pg_size, int n_obs, const knowledge_base_t &kb, const unordered_set<int> &prominent_axioms, const inference_configuration_t &c, int *p_num_filtered_out) {
-   
+  if(p_out_pg->nodes[n_obs].lit.predicate.isEqual("nsubj")) return true;
+  
+  //if( p_out_pg->nodes[ n_obs ].lit.wa_number >= 9999.0) return true;
   if( p_out_pg->nodes[ n_obs ].depth > (signed)c.depthlimit-1 ) return true;
 //  if( p_out_pg->nodes[ n_obs ].num_instantiated > 100) return true;
   
@@ -446,6 +450,8 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, int n_curre
   if(!kb.search(&axioms, key_pa, prominent_axioms, p_num_filtered_out, !c.no_pruning)) return true;
   if(c.isTimeout()) return false;
 
+  V(5) cerr << TS() << "Axioms: " << axioms.size() << endl;
+  
   /* For each unifiable axiom, */
   string        log_head = ":-D";
   int num_instantiated = 0;
@@ -455,7 +461,7 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, int n_curre
   
   double stime = getTimeofDaySec();
 
-  cerr << "B:" << p_out_pg->nodes[n_obs].toString() << ":" << axioms.size() << endl;
+  //cerr << "B:" << p_out_pg->nodes[n_obs].toString() << ":" << axioms.size() << endl;
 
   //repeat(a, min((size_t)100, axioms.size())) {
   repeat(a, axioms.size()) {
@@ -498,8 +504,10 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, int n_curre
 
       if(LabelNode == p_out_pg->nodes[n_obs].type) continue;
       
+      string name_axiom;
       if(-1 != i_name) {
-        string name_axiom = sr.stack.children[i_name]->children[1]->getString();
+        name_axiom = sr.stack.children[i_name]->children[1]->getString();
+        
         if(string::npos != name_axiom.find("*")) {
           /* How many times is this axioms applied so far? */
           uint_t num_limit = atoi(name_axiom.substr(name_axiom.find("*")+1).c_str());
@@ -508,7 +516,7 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, int n_curre
 
       /* For each clause that has the literal n_obs in its right-hand side, */
       logical_function_t lf( *sr.stack.children[i_lf] );
-      string             axiom_str  = lf.toString();
+      string             axiom_str  = name_axiom+"/"+lf.toString();
       string             axiom_disj = -1 == i_disj ? "" : sr.stack.children[i_disj]->children[1]->getString();
       
       /* Already applied? */
@@ -524,7 +532,6 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, int n_curre
         V(5) cerr << TS() << log_head << "Loopy!" << endl;
         continue; /* That's loopy axiom. */
       }
-
 
       /* FIND A SET OF LITERALS THAT MATCHES TO THE RIGHT HAND SIDE LITERALS. */
       vector<pair<vector<literal_t>,vector<int> > > rhs_collections;
@@ -545,7 +552,7 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, int n_curre
             /* ACQUIRE OTHER POSSIBLE COMBINATIONS OF LITERALS. */
             vector<vector<int> > combinations;
             score_function_t::function_unit_t unit("", lf.branches[1], 0.0);
-            _query(cb.callback, (void*)&combinations, *p_out_pg, n_current_pg_size, c, unit);
+            _query(cb.callback, (void*)&combinations, *p_out_pg, n_current_pg_size, c, unit, NULL, 0, false, !c.no_apc4rhs);
 
             unifier_t          theta;
             vector<int>        rhs_candidates;
@@ -597,8 +604,6 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, int n_curre
       if(0 == rhs_collections.size())
         V(5) cerr << TS() << "No matching RHS found." << endl;
 
-      unordered_set<int> rhs_binding_literals;
-
       num_instantiated++;
 
       repeat(i, rhs_collections.size()) {
@@ -606,12 +611,13 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, int n_curre
         unifier_t      theta;
         bool           f_inc = false;
         vector<string> rhs_instances;
+        unordered_map<string, unordered_set<string> > mapsVarConv;
+        unordered_set<int> rhs_binding_literals;
 
         /* Produce substitution. */
         bool f_me_in = false;
         /* For each literal, */
         vector<literal_t> lhs_literals;
-
 
         repeat(j, rhs_collections[i].first.size()) {
           if(n_obs == rhs_collections[i].second[j]) f_me_in = true;
@@ -620,6 +626,9 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, int n_curre
           if( !getMGU( &theta, rhs_collections[i].first[j], p_out_pg->nodes[rhs_collections[i].second[j]].lit ) ) { f_inc = true; }
           rhs_instances.push_back(p_out_pg->nodes[rhs_collections[i].second[j]].toString());
           //cerr << i << ":" << j << p_out_pg->nodes[rhs_collections[i].second[j]].toString() << endl;
+
+          for(int k=0; k<rhs_collections[i].first[j].terms.size(); k++)
+            mapsVarConv[rhs_collections[i].first[j].terms[k].toString()].insert(p_out_pg->nodes[rhs_collections[i].second[j]].lit.terms[k].toString());
         }
 
         // TODO: abc
@@ -646,6 +655,27 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, int n_curre
           }
         }
 
+        /* FOR EQUALITY. */
+        bool fNotApplicable = false;
+        
+        for(unordered_map<string, unordered_set<string> >::const_iterator j=mapsVarConv.begin(); mapsVarConv.end()!=j; ++j) {
+          for(unordered_set<string>::const_iterator k=j->second.begin(); j->second.end()!=k; ++k) {
+            for(unordered_set<string>::const_iterator l=j->second.begin(); j->second.end()!=l; ++l) {
+              if(*k >= *l) continue;
+              if(store_item_t(*k).isConstant() && store_item_t(*l).isConstant()) {
+                fNotApplicable = true;
+                continue;
+              }
+              
+              rhs_binding_literals.insert(lhs_literals.size());
+              lhs_literals.push_back(literal_t("=", *k, *l));
+            }
+          }
+        }
+
+        if(fNotApplicable)
+          continue;
+
         /* Check if this lhs matches the condition stated by the given label. */
         bool f_prohibited = false;
         if( LabelGiven == c.objfunc ) {
@@ -654,13 +684,13 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, int n_curre
 
             repeat( k, lhs_literals.size() ) {
               if( c.training_instance.y_lf.branches[j].branches[0].lit.predicate == lhs_literals[k].predicate ) { f_prohibited = true; break; }
-            }
+           }
           }
 
           if( f_prohibited ) V(5) cerr << "Prohibited: " << axiom_str << endl;
         }
 
-        /* Conditionin by equality. */
+        /* Conditionin by inequality. */
         vector<pair<store_item_t, store_item_t> > cond_neqs;
         repeat(j, lf.branches[1].branches.size()) {
           if(lf.branches[1].branches[j].lit.predicate == "!=") {
@@ -670,7 +700,6 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, int n_curre
             cond_neqs.push_back(make_pair(theta.map(lf.branches[1].branches[j].lit.terms[0]), theta.map(lf.branches[1].branches[j].lit.terms[1])));
           }
         }
-
 
         /* Perform backward-chaining. */
         vector<int> backchained_literals;
@@ -686,7 +715,6 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, int n_curre
           literal_t &lit = lhs_literals[j];
 
           /* ISSUE UNKNOWN VARIABLES. EXCEPT LITERALS THAT ARE PRODUCED FROM RHS BINDING. */
-
           if(0 == rhs_binding_literals.count(j)) {
             for( uint_t k=0; k<lit.terms.size(); k++ ) {
               static size_t s_cag = 0;
@@ -722,7 +750,7 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, int n_curre
           p_out_pg->nodes[n_backchained].rhs.insert(rhs_collections[i].second.begin(), rhs_collections[i].second.end());
           p_out_pg->nodes[n_backchained].cond_neqs.insert(p_out_pg->nodes[n_backchained].cond_neqs.end(), cond_neqs.begin(), cond_neqs.end());
           p_out_pg->nodes[n_backchained].f_prohibited             = f_prohibited;
-          p_out_pg->nodes[n_backchained].axiom_disj               = axiom_disj;
+          p_out_pg->nodes[n_backchained].axiom_disj               = axiom_disj == "" ? p_out_pg->nodes[n_obs].axiom_disj : (p_out_pg->nodes[n_obs].toString() + axiom_disj);
 
           V(5) cerr << TS() << log_head << "new Literal: " <<
             p_out_pg->nodes[n_backchained].lit.toString() << endl;
@@ -768,48 +796,100 @@ void proof_graph_t::detectInconsistentNodes(int n_obs, const logical_function_t 
   //if(p_x_axiom[n_obs][axiom_str] > 0 ) return;
   
   /* Find the inconsistent pair! */
-  const vector<int> *p_nodes;
+  const vector<int> *p_paired_nodes;
+  int   n_lf_obs, n_lf_paired;
+
+  V(6) cerr << TS() << "INC:" << lf.toString() << endl;
+  
   if(nodes[n_obs].lit.predicate == lf.branches[1].lit.predicate) {
-    if(!getNode(&p_nodes, lf.branches[0].lit.predicate, lf.branches[0].lit.terms.size())) return;
+    n_lf_obs = 1; n_lf_paired = 0;
+    if(!getNode(&p_paired_nodes, lf.branches[0].lit.predicate, lf.branches[0].lit.terms.size())) return;
   } else {
-    if(!getNode(&p_nodes, lf.branches[1].lit.predicate, lf.branches[1].lit.terms.size())) return;
+    n_lf_obs = 0; n_lf_paired = 1;
+    if(!getNode(&p_paired_nodes, lf.branches[1].lit.predicate, lf.branches[1].lit.terms.size())) return;
   }
 
-  repeat(i, p_nodes->size()) {          
-    unifier_t theta;
-    bool      f_fail = false;
-    pg_node_t
-      &n1 = nodes[n_obs].lit.predicate == lf.branches[0].lit.predicate ? nodes[n_obs] : nodes[(*p_nodes)[i]],
-      &n2 = nodes[n_obs].lit.predicate == lf.branches[0].lit.predicate ? nodes[(*p_nodes)[i]] : nodes[n_obs];
+  /* CONSTANT MISMATCH */
+  for(uint i=0; i<nodes[n_obs].lit.terms.size(); i++) {
+    if(lf.branches[n_lf_obs].lit.terms[i].isConstant() && nodes[n_obs].lit.terms[i].isConstant() &&
+       lf.branches[n_lf_obs].lit.terms[i] != nodes[n_obs].lit.terms[i]) return;
+  }
 
+  repeat(i, p_paired_nodes->size()) {
+    V(5) cerr << TS() << "Possibly inconsistent: " << nodes[(*p_paired_nodes)[i]].toString() << ", " << nodes[n_obs].toString() << endl;
+    
+    /* CONSTANT MISMATCH */
+    bool fConstantMismatch = false;
+    
+    for(uint j=0; j<nodes[(*p_paired_nodes)[i]].lit.terms.size(); j++) {
+      if(lf.branches[n_lf_paired].lit.terms[j].isConstant() && nodes[(*p_paired_nodes)[i]].lit.terms[j].isConstant() &&
+         lf.branches[n_lf_paired].lit.terms[j] != nodes[(*p_paired_nodes)[i]].lit.terms[j]) {fConstantMismatch = true; break;}
+    }
+
+    if(fConstantMismatch) continue;
+    
+    V(5) cerr << TS() << "Inconsistent: " << nodes[(*p_paired_nodes)[i]].toString() << ", " << nodes[n_obs].toString() << endl;
+          
+    unifier_t theta;
+
+    for(uint j=0; j<nodes[n_obs].lit.terms.size(); j++) {
+      if(lf.branches[n_lf_obs].lit.terms[j].isConstant() && !nodes[n_obs].lit.terms[j].isConstant())
+        theta.add(lf.branches[n_lf_obs].lit.terms[j], nodes[n_obs].lit.terms[j]);
+    }
+
+    for(uint j=0; j<nodes[(*p_paired_nodes)[i]].lit.terms.size(); j++) {
+      if(lf.branches[n_lf_paired].lit.terms[j].isConstant() && !nodes[(*p_paired_nodes)[i]].lit.terms[j].isConstant())
+        theta.add(lf.branches[n_lf_paired].lit.terms[j], nodes[(*p_paired_nodes)[i]].lit.terms[j]);
+    }
+    
     repeat(t1, lf.branches[0].lit.terms.size()) {
       repeat(t2, lf.branches[1].lit.terms.size()) {
         if(lf.branches[0].lit.terms[t1] == lf.branches[1].lit.terms[t2]) {
-          theta.add(n1.lit.terms[t1], n2.lit.terms[t2]);
-
-          if(n1.lit.terms[t1].isConstant() && n2.lit.terms[t2].isConstant() &&
-              n1.lit.terms[t1] != n2.lit.terms[t2]) {
-            f_fail = true; break;
-          }
-        }
-
-        if(lf.branches[0].lit.terms[t1].isConstant() && lf.branches[0].lit.terms[t1] != n1.lit.terms[t1] && lf.branches[0].lit.terms[t1] != n2.lit.terms[t2]) {
-          f_fail = true; break;
-        }
-
-        if(lf.branches[1].lit.terms[t2].isConstant() && lf.branches[1].lit.terms[t2] != n1.lit.terms[t1] && lf.branches[1].lit.terms[t2] != n2.lit.terms[t2]) {
-          f_fail = true; break;
+          theta.add(nodes[(*p_paired_nodes)[i]].lit.terms[t1], nodes[n_obs].lit.terms[t2]);
         }
       } }
 
-    if(f_fail) continue;
-
-    V(5) cerr << TS() << "Inconsistent: " << n1.toString() << ", " << n2.toString() << theta.toString() << endl;
-    
     p_x_axiom[n_obs][axiom_str] = 1;
-    p_x_axiom[(*p_nodes)[i]][axiom_str] = 1;
-    mutual_exclusive_nodes.push_back(make_pair(make_pair((*p_nodes)[i], n_obs), theta));
+    p_x_axiom[(*p_paired_nodes)[i]][axiom_str] = 1;
+    mutual_exclusive_nodes.push_back(make_pair(make_pair((*p_paired_nodes)[i], n_obs), theta));
   }
+  
+  // repeat(i, p_nodes->size()) {          
+  //   unifier_t theta;
+  //   bool      f_fail = false;
+  //   pg_node_t
+  //     &n1 = nodes[n_obs].lit.predicate == lf.branches[0].lit.predicate ? nodes[n_obs] : nodes[(*p_nodes)[i]],
+  //     &n2 = nodes[n_obs].lit.predicate == lf.branches[0].lit.predicate ? nodes[(*p_nodes)[i]] : nodes[n_obs];
+
+    
+  //   repeat(t1, lf.branches[0].lit.terms.size()) {
+  //     repeat(t2, lf.branches[1].lit.terms.size()) {
+  //       if(lf.branches[0].lit.terms[t1] == lf.branches[1].lit.terms[t2]) {
+  //         theta.add(n1.lit.terms[t1], n2.lit.terms[t2]);
+
+  //         if(n1.lit.terms[t1].isConstant() && n2.lit.terms[t2].isConstant() &&
+  //             n1.lit.terms[t1] != n2.lit.terms[t2]) {
+  //           f_fail = true; break;
+  //         }
+  //       }
+
+  //       if(lf.branches[0].lit.terms[t1].isConstant() && lf.branches[0].lit.terms[t1] != n1.lit.terms[t1] && lf.branches[0].lit.terms[t1] != n2.lit.terms[t2]) {
+  //         f_fail = true; break;
+  //       }
+
+  //       if(lf.branches[1].lit.terms[t2].isConstant() && lf.branches[1].lit.terms[t2] != n1.lit.terms[t1] && lf.branches[1].lit.terms[t2] != n2.lit.terms[t2]) {
+  //         f_fail = true; break;
+  //       }
+  //     } }
+
+  //   if(f_fail) continue;
+
+  //   V(5) cerr << TS() << "Inconsistent: " << n1.toString() << ", " << n2.toString() << theta.toString() << endl;
+    
+  //   p_x_axiom[n_obs][axiom_str] = 1;
+  //   p_x_axiom[(*p_nodes)[i]][axiom_str] = 1;
+  //   mutual_exclusive_nodes.push_back(make_pair(make_pair((*p_nodes)[i], n_obs), theta));
+  // }
 }
 
 bool proof_graph_t::produceUnificationAssumptions(const knowledge_base_t &kb, const inference_configuration_t &c) {
@@ -850,6 +930,7 @@ bool proof_graph_t::produceUnificationAssumptions(const knowledge_base_t &kb, co
 
 
           if(!getMGU(&unic, nodes[ni].lit, nodes[nj].lit, false, true)) continue;
+          //if(nodes[ni].lit.wa_number >= 9999.0 && nodes[nj].lit.wa_number >= 9999.0) continue;
 
           /* TWO NODES SHARING IT'S PARENT ARE NOT UNIFIABLE. */
 //          if(has_intersection(nodes[ni].nodes_appeared.begin(), nodes[ni].nodes_appeared.end(),
@@ -858,16 +939,86 @@ bool proof_graph_t::produceUnificationAssumptions(const knowledge_base_t &kb, co
 
           if(nodes[ni].lit.backchained_on == nodes[nj].lit.backchained_on) continue;
 
+
           /* TWO NODES WHICH ARE PRODUCED FROM DISJOINT AXIOMS CANNOT BE UNIFIED. */
           if("" != nodes[ni].axiom_disj && "" != nodes[nj].axiom_disj &&
-              nodes[ni].axiom_disj == nodes[nj].axiom_disj) continue;
+             nodes[ni].axiom_disj == nodes[nj].axiom_disj) {
+            V(6) cerr << TS() << "Canceled: " << nodes[ni].toString() << "," << nodes[nj].toString() << " by " << nodes[ni].axiom_disj << endl;
+            continue;
+          }
 
           /* TWO LITERALS L1, L2 CANNOT BE UNIFIED IF THEY ARE IN EXPLAINER-EXPLAINEE RELATIONSHIP. */
           if(nodes[ni].nodes_appeared.end() != nodes[ni].nodes_appeared.find(nj) ||
              nodes[nj].nodes_appeared.end() != nodes[nj].nodes_appeared.find(ni) )
             continue;
 
-          V(6) cerr << TS() << "Unifiable pair: " << nodes[ni].toString() << "," << nodes[nj].toString() << endl;
+          /* NODES IN nodes_appeared ARE SIMULTANEOUSLY
+             HYPOTHESIZED. CHECK IF THEY ARE CONTRADICTORY OR NOT. */
+          bool fIncImplyBreak = false;
+          unifier_t uni;
+          getMGU(&uni, nodes[ni].lit, nodes[nj].lit);
+
+          if(c.implybreak) {
+            for(unordered_set<int>::const_iterator k=nodes[ni].nodes_appeared.begin(); nodes[ni].nodes_appeared.end()!=k; ++k) {
+              for(unordered_set<int>::const_iterator l=nodes[nj].nodes_appeared.begin(); nodes[nj].nodes_appeared.end()!=l; ++l) {
+                V(6) {
+                  cerr << nodes[ni].toString() << " => " << nodes[*k].toString() << endl;
+                  cerr << nodes[nj].toString() << " => " << nodes[*l].toString() << endl;
+                }
+              
+                for(int n=0; n<kb.mxpairs.size(); n++) {
+                  vector<pair<int, int> > mxeqs;
+                  int numImpliedEqs = 0;
+                
+                  if(kb.mxpairs[n].first.predicate == nodes[*k].lit.predicate &&
+                     kb.mxpairs[n].second.predicate == nodes[*l].lit.predicate) {
+                    for(int mx=0; mx<kb.mxpairs[n].first.terms.size(); mx++) {
+                      for(int my=0; my<kb.mxpairs[n].second.terms.size(); my++) {
+                        if(kb.mxpairs[n].first.terms[mx] == kb.mxpairs[n].first.terms[my]) {
+                          V(6) cerr << kb.mxpairs[n].first.toString() << " & " << kb.mxpairs[n].second.toString() << " => _|_: " << mx << "," << my << endl;
+                      
+                          mxeqs.push_back(make_pair(mx, my));
+                        }
+                      } }
+                
+                    for(int o=0; o<mxeqs.size(); o++) {
+                      if(doesMGUimply(uni, nodes[*k].lit.terms[mxeqs[o].first], nodes[*l].lit.terms[mxeqs[o].second]) ||
+                         nodes[*k].lit.terms[mxeqs[o].first] == nodes[*l].lit.terms[mxeqs[o].first]
+                         ) numImpliedEqs++;
+                    }
+                    
+                    if(numImpliedEqs == mxeqs.size()) { fIncImplyBreak = true; break; }
+                  } else if(kb.mxpairs[n].first.predicate == nodes[*l].lit.predicate &&
+                            kb.mxpairs[n].second.predicate == nodes[*k].lit.predicate) {
+                    for(int mx=0; mx<kb.mxpairs[n].first.terms.size(); mx++) {
+                      for(int my=0; my<kb.mxpairs[n].second.terms.size(); my++) {
+                        if(kb.mxpairs[n].first.terms[mx] == kb.mxpairs[n].first.terms[my]) {
+                          V(6) cerr << kb.mxpairs[n].first.toString() << " & " << kb.mxpairs[n].second.toString() << " => _|_: " << mx << "," << my << endl;
+                      
+                          mxeqs.push_back(make_pair(mx, my));
+                        }
+                      } }
+                
+                    for(int o=0; o<mxeqs.size(); o++) {
+                      if(doesMGUimply(uni, nodes[*l].lit.terms[mxeqs[o].first], nodes[*k].lit.terms[mxeqs[o].second]) ||
+                         nodes[*k].lit.terms[mxeqs[o].first] == nodes[*l].lit.terms[mxeqs[o].first]
+                         ) numImpliedEqs++;
+                    }
+                    
+                    if(numImpliedEqs == mxeqs.size()) { fIncImplyBreak = true; break; }
+                  }
+                  
+                }
+              }
+            }
+
+            if(fIncImplyBreak) {
+              V(4) cerr << TS() << "EqImplyBreak: " << nodes[ni].toString() << "," << nodes[nj].toString() << endl;
+              continue;
+            }
+          }
+          
+          V(6) cerr << TS() << "Unifiable pair: " << nodes[ni].toString() << "," << nodes[nj].toString() << "/" << uni.toString() << endl;
 
           num_really_unifiable++;
           //unifiables.push_back(make_pair(ni, nj));
@@ -881,7 +1032,7 @@ bool proof_graph_t::produceUnificationAssumptions(const knowledge_base_t &kb, co
           vector<int> nodes_explaining;
           nodes_explaining.push_back(explainer);
 
-          unifier_t uni;
+          // RENEW THE UNIFIER
           getMGU(&uni, nodes[explainee].lit, nodes[explainer].lit);
 
           char p[1024];
@@ -889,18 +1040,18 @@ bool proof_graph_t::produceUnificationAssumptions(const knowledge_base_t &kb, co
 
 
           /* TWO VARIABLES MUST BE THE SAME TYPE. */
-          bool f_incompatible = false;
+          // bool f_incompatible = false;
 
-          repeat(k, uni.substitutions.size()) {
-            if(!isCompatibleType(uni.substitutions[k].terms[0], uni.substitutions[k].terms[1])) {
-              V(5) cerr << TS() << "Incompatible unification: " <<
-                  uni.substitutions[k].terms[0] << ":" << mget(var_type, uni.substitutions[k].terms[0], (string)"?") << "~" <<
-                  uni.substitutions[k].terms[1] << ":" << mget(var_type, uni.substitutions[k].terms[1], (string)"?") << endl;
-              f_incompatible = true;
-            }
-          }
+          // repeat(k, uni.substitutions.size()) {
+          //   if(!isCompatibleType(uni.substitutions[k].terms[0], uni.substitutions[k].terms[1])) {
+          //     V(5) cerr << TS() << "Incompatible unification: " <<
+          //         uni.substitutions[k].terms[0] << ":" << mget(var_type, uni.substitutions[k].terms[0], (string)"?") << "~" <<
+          //         uni.substitutions[k].terms[1] << ":" << mget(var_type, uni.substitutions[k].terms[1], (string)"?") << endl;
+          //     f_incompatible = true;
+          //   }
+          // }
 
-          if(f_incompatible) continue;
+          // if(f_incompatible) continue;
 
           //if(c.use_only_user_score && nodes[explainee].lit.predicate != "mention'") continue;
 
@@ -937,29 +1088,29 @@ bool proof_graph_t::produceUnificationAssumptions(const knowledge_base_t &kb, co
 
           V(6) cerr << TS() << nodes[explainee].toString() << "~" << nodes[explainer].toString() << endl;
 
-          repeat(k, uni.substitutions.size()) {
-            if(!isCompatibleType(uni.substitutions[k].terms[0], uni.substitutions[k].terms[1])) {
-              V(5) cerr << TS() << "Incompatible unification: " <<
-                  uni.substitutions[k].terms[0] << ":" << mget(var_type, uni.substitutions[k].terms[0], (string)"?") << "~" <<
-                  uni.substitutions[k].terms[1] << ":" << mget(var_type, uni.substitutions[k].terms[1], (string)"?") << endl;
-            } else {
-              /* IF THERE IS SOME TYPE RESTRICTION... */
-              string &tv1 = var_type_var[uni.substitutions[k].terms[0]],
-                &tv2 = var_type_var[uni.substitutions[k].terms[1]];
+          // repeat(k, uni.substitutions.size()) {
+          //   if(!isCompatibleType(uni.substitutions[k].terms[0], uni.substitutions[k].terms[1])) {
+          //     V(5) cerr << TS() << "Incompatible unification: " <<
+          //         uni.substitutions[k].terms[0] << ":" << mget(var_type, uni.substitutions[k].terms[0], (string)"?") << "~" <<
+          //         uni.substitutions[k].terms[1] << ":" << mget(var_type, uni.substitutions[k].terms[1], (string)"?") << endl;
+          //   } else {
+          //     /* IF THERE IS SOME TYPE RESTRICTION... */
+          //     string &tv1 = var_type_var[uni.substitutions[k].terms[0]],
+          //       &tv2 = var_type_var[uni.substitutions[k].terms[1]];
 
-              if(!("" == tv1 || "" == tv2)) {
-                int eqConstraint = getSubNode(store_item_t(tv1), store_item_t(tv2)),
-                  eqDesired = getSubNode(uni.substitutions[k].terms[0], uni.substitutions[k].terms[1]);
+          //     if(!("" == tv1 || "" == tv2)) {
+          //       int eqConstraint = getSubNode(store_item_t(tv1), store_item_t(tv2)),
+          //         eqDesired = getSubNode(uni.substitutions[k].terms[0], uni.substitutions[k].terms[1]);
 
-                if(-1 != eqDesired) {
-                  if(-1 == eqConstraint)
-                    eqConstraint = addNode(literal_t("=", store_item_t(tv1), store_item_t(tv2)), HypothesisNode);
+          //       if(-1 != eqDesired) {
+          //         if(-1 == eqConstraint)
+          //           eqConstraint = addNode(literal_t("=", store_item_t(tv1), store_item_t(tv2)), HypothesisNode);
 
-                  type_restriction[eqDesired] = eqConstraint;
-                }
-              }
-            }
-          }
+          //         type_restriction[eqDesired] = eqConstraint;
+          //       }
+          //     }
+          //   }
+          // }
           
           //cerr << nodes_explaining.size() << endl;
 
@@ -1012,10 +1163,10 @@ bool proof_graph_t::produceEqualityAssumptions(const knowledge_base_t &kb, const
         nodes[node_sub].lit.wa_number = 0;
 
         /* TWO VARIABLES MUST BE THE SAME TYPE. */
-        if((t1.isConstant() && t2.isConstant()) || !isCompatibleType(t1, t2)) {
-          V(4) cerr << TS() << "Incompatible unification: " << t1 << ":" << mget(var_type, t1, (string)"?") << "~" << t2 << ":" << mget(var_type, t2, (string)"?") << endl;
-          nodes[node_sub].lit.wa_number = 9999;
-        }
+        // if((t1.isConstant() && t2.isConstant()) || !isCompatibleType(t1, t2)) {
+        //   V(4) cerr << TS() << "Incompatible unification: " << t1 << ":" << mget(var_type, t1, (string)"?") << "~" << t2 << ":" << mget(var_type, t2, (string)"?") << endl;
+        //   nodes[node_sub].lit.wa_number = 9999;
+        // }
 
       } }
   }

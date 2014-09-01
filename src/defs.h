@@ -1,6 +1,6 @@
 #pragma once
 
-#define USE_OMP
+//#define USE_OMP
 #define USE_GUROBI
 //#define USE_LOCALSOLVER
 //#define USE_LPSOLVE
@@ -20,6 +20,7 @@
 
 #include <iostream>
 #include <sstream>
+#include <fstream>
 
 #include <tr1/unordered_map>
 #include <tr1/unordered_set>
@@ -38,7 +39,8 @@
 
 #include <pcrecpp.h>
 
-#include <python2.7/Python.h>
+//#include <python2.7/Python.h>
+#include <Python.h>
 
 #define mymax(x, y) (x > y ? x : y)
 #define mymin(x, y) (x < y ? x : y)
@@ -199,12 +201,12 @@ class store_item_t {
     return exp;
   }
 
-  static inline store_item_t issueUnknown() {
+  static inline store_item_t issueUnknown(const string &base = "") {
 //    return store_item_t("A");
     char buffer[1024];
 
 #pragma omp critical
-    sprintf( buffer, "_%d", m_issued_variable_count++ );
+    sprintf( buffer, "_%s%d", base.c_str(), m_issued_variable_count++ );
 
     return store_item_t(buffer);
   }
@@ -988,12 +990,12 @@ struct knowledge_base_t {
   unordered_map<string, unordered_map<string, unordered_set<int> > > bc_matrix;
   vector<logical_function_t> inconsistents;
 
-  unordered_set<string> do_not_unifies, do_not_cares, search_constant;
+  unordered_set<string> do_not_unifies, do_not_cares, search_constant, ghosts;
   vector<pcrecpp::RE>   do_not_unifies_regex, do_not_cares_regex, search_constant_regex;
 
   unordered_map<string, string> explained_map;
   vector<pair<pcrecpp::RE, string> > explained_map_regex;
-  
+
   inline knowledge_base_t(bool f_writable, const string &filename) :
     num_branches(10),
       num_axioms(0), p_db(NULL), p_ins_stmt(NULL), f_in_transaction(false), context_pruning_cdb(-1) {
@@ -1048,6 +1050,19 @@ struct knowledge_base_t {
     sqlite3_close(p_db);          p_db = NULL;
     ::close(context_pruning_cdb);
   }
+
+  inline void loadGhost(const string &fn) {
+    ifstream ifs(fn.c_str());
+    string   ln;
+    
+    while(getline(ifs, ln)) {
+      this->ghosts.insert(ln);
+    }
+    
+    ifs.close();
+  }
+  
+  inline bool isGhost(const string &pred) const { return this->ghosts.count(pred) > 0; }
 
   bool copy(knowledge_base_t *p_dest) const;
   bool setContextDatabase(const string &fn);
@@ -1534,7 +1549,7 @@ struct proof_graph_t {
   bool produceEqualityAssumptions(const knowledge_base_t &kb, const inference_configuration_t &c);
   void printGraph( const lp_solution_t &sol, const linear_programming_problem_t& lpp, const lp_problem_mapping_t &lprel, const string &property = "", ostream* p_out = g_p_out, logical_function_t *p_hypothesis = NULL ) const;
   bool produceUnificationAssumptions(const knowledge_base_t &kb, const inference_configuration_t &c);
-  void detectInconsistentNodes(int n_obs, const logical_function_t&);
+  void detectInconsistentNodes(const knowledge_base_t &kb);
   
 };
 

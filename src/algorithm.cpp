@@ -1089,6 +1089,11 @@ bool _moduleInfer(command_option_t &cmd, vector<string> &args) {
     cerr << TS() << "Contextual pruning activated." << endl;
   }
 
+  if(has_key(cmd, 'g')) {
+    kb.loadGhost(cmd['g']);
+    cerr << TS() << "Ghost database loaded." << endl;
+  }
+  
   if(has_key(cmd, 'h')) {
     kb.num_branches = atoi(cmd['h'].c_str());
   }
@@ -1142,7 +1147,7 @@ int main( int argc, char **pp_args ) {
 
   command_option_t cmd;
   vector<string>   args;
-  function::getParsedOption( &cmd, &args, "LIzsUDh:m:uv:i:b:C:N:nt:T:w:E:O:o:p:d:c:e:f:k:S:X:x:R", argc, pp_args );
+  function::getParsedOption( &cmd, &args, "LIzsUDh:m:uv:i:b:C:N:nt:T:w:E:O:o:p:d:c:e:f:k:S:X:x:Rg:", argc, pp_args );
 
   if( !has_key( cmd, 'm' ) ) { cerr << str_usage << endl; return 1; }
   srand(has_key(cmd, 'r') ? atoi(cmd['r'].c_str()) : time(NULL));

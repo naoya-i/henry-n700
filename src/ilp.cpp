@@ -1036,7 +1036,7 @@ int lp_inference_cache_t::createConsistencyConstraint(int _n1, int _n2, const un
   bool             f_fails = false;
 
   repeat(j, theta.substitutions.size()) {
-    //if(theta.substitutions[j].terms[0] == theta.substitutions[j].terms[1]) continue;
+    if(theta.substitutions[j].terms[0] == theta.substitutions[j].terms[1]) continue;
     if(theta.substitutions[j].terms[0].isConstant() && theta.substitutions[j].terms[1].isConstant() &&
        theta.substitutions[j].terms[0] != theta.substitutions[j].terms[1]) { f_fails = true; break; }
 

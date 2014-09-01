@@ -2,7 +2,8 @@
 OBJS=src/algorithm.o src/function.o src/ilp.o src/knowledge_base.o
 
 CC=g++
-LDFLAGS=-lpython2.7 -lsqlite3 -lpcre -lpcrecpp -lcdb
+CFLAGS=-stdlib=libstdc++
+LDFLAGS=-lpython2.7 -lsqlite3 -lpcre -lpcrecpp -lcdb -lstdc++
 
 ifneq ($(shell grep -E '^\#define USE_OMP' src/defs.h),)
 LDFLAGS+=-fopenmp

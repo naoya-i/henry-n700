@@ -349,6 +349,7 @@ bool function::enumeratePotentialElementalHypotheses(proof_graph_t *p_out_pg, co
 
   p_out_pg->n_start = n_start;
   p_out_pg->produceUnificationAssumptions(kb, c);
+  p_out_pg->detectInconsistentNodes(kb);
 
   /* PROCESS EQUALITIES IN LABEL NODES. */
   if(!p_out_pg->f_lbl_processed) {
@@ -422,7 +423,7 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, int n_curre
   if(p_out_pg->nodes[n_obs].lit.predicate.isEqual("nsubj")) return true;
   
   //if( p_out_pg->nodes[ n_obs ].lit.wa_number >= 9999.0) return true;
-  if( p_out_pg->nodes[ n_obs ].depth > (signed)c.depthlimit-1 ) return true;
+  if(p_out_pg->nodes[ n_obs ].depth > (signed)c.depthlimit-1) return true;
 //  if( p_out_pg->nodes[ n_obs ].num_instantiated > 100) return true;
   
   vector<knowledge_base_t::axiom_t> axioms;
@@ -494,11 +495,7 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, int n_curre
         i_disj = sr.stack.findFunctorArgument(FnAxiomDisjoint);
       bool f_ghost = string::npos != sr.stack.toString().find("I-AM-GHOST");
 
-      if(-1 == i_lf) {
-        int i_inc = sr.stack.findFunctorArgument(IncString); if(-1 == i_inc) continue;
-        p_out_pg->detectInconsistentNodes(n_obs, logical_function_t(*sr.stack.children[i_inc]));
-        continue;
-      }
+      if(-1 == i_lf) continue;
 
       if("" != p_out_pg->nodes[n_obs].lit.extra && 0 == p_out_pg->nodes[n_obs].lit.wa_number) continue;
 
@@ -719,7 +716,7 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, int n_curre
             for( uint_t k=0; k<lit.terms.size(); k++ ) {
               static size_t s_cag = 0;
               if('!' == lit.terms[k].toString()[0]) { theta.add(lit.terms[k], store_item_t(::toString("CAG_%d", s_cag++))); }
-              if(!lit.terms[k].isConstant() && !theta.isApplied(lit.terms[k])) theta.add(lit.terms[k], store_item_t::issueUnknown());
+              if(!lit.terms[k].isConstant() && !theta.isApplied(lit.terms[k])) theta.add(lit.terms[k], store_item_t::issueUnknown(lit.terms[k].toString()));
             }
 
             theta.apply( &lit );
@@ -731,7 +728,7 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, int n_curre
           V(5) cerr << TS() << log_head << p_out_pg->nodes[n_backchained].lit.wa_number << "*" << rhs_cost << endl;
 
           p_out_pg->nodes[n_backchained].num_instantiated         = axioms.size();
-          p_out_pg->nodes[n_backchained].depth                    = p_out_pg->nodes[n_obs].depth + (f_ghost ? 0 : 1);
+          p_out_pg->nodes[n_backchained].depth                    = p_out_pg->nodes[n_obs].depth + (f_ghost || kb.isGhost(lit.predicate.toString()) ? 0 : 1);
           p_out_pg->nodes[n_backchained].instantiated_by.axiom    = -1 != i_name ? (-1 != i_name ? sr.stack.children[i_name]->children[1]->getString() : "?") : "";
           p_out_pg->nodes[n_backchained].instantiated_by.where    = j;
           p_out_pg->nodes[n_backchained].axiom_used.insert( p_out_pg->nodes[n_obs].axiom_used.begin(), p_out_pg->nodes[n_obs].axiom_used.end() );
@@ -789,69 +786,76 @@ bool function::instantiateBackwardChainings(proof_graph_t *p_out_pg, int n_curre
   return true;
 }
 
-void proof_graph_t::detectInconsistentNodes(int n_obs, const logical_function_t &lf) {
-  string axiom_str = lf.toString();
+void proof_graph_t::detectInconsistentNodes(const knowledge_base_t &kb) {
+
+  for(uint inc=0; inc<kb.inconsistents.size(); inc++) {
+    const logical_function_t &lf = kb.inconsistents[inc];
+    string axiom_str = lf.toString();
   
-  /* Already applied? */
-  //if(p_x_axiom[n_obs][axiom_str] > 0 ) return;
-  
-  /* Find the inconsistent pair! */
-  const vector<int> *p_paired_nodes;
-  int   n_lf_obs, n_lf_paired;
-
-  V(6) cerr << TS() << "INC:" << lf.toString() << endl;
-  
-  if(nodes[n_obs].lit.predicate == lf.branches[1].lit.predicate) {
-    n_lf_obs = 1; n_lf_paired = 0;
-    if(!getNode(&p_paired_nodes, lf.branches[0].lit.predicate, lf.branches[0].lit.terms.size())) return;
-  } else {
-    n_lf_obs = 0; n_lf_paired = 1;
-    if(!getNode(&p_paired_nodes, lf.branches[1].lit.predicate, lf.branches[1].lit.terms.size())) return;
-  }
-
-  /* CONSTANT MISMATCH */
-  for(uint i=0; i<nodes[n_obs].lit.terms.size(); i++) {
-    if(lf.branches[n_lf_obs].lit.terms[i].isConstant() && nodes[n_obs].lit.terms[i].isConstant() &&
-       lf.branches[n_lf_obs].lit.terms[i] != nodes[n_obs].lit.terms[i]) return;
-  }
-
-  repeat(i, p_paired_nodes->size()) {
-    V(5) cerr << TS() << "Possibly inconsistent: " << nodes[(*p_paired_nodes)[i]].toString() << ", " << nodes[n_obs].toString() << endl;
+    /* Find the inconsistent pair! */
+    V(6) cerr << TS() << "INC:" << lf.toString() << endl;
     
-    /* CONSTANT MISMATCH */
-    bool fConstantMismatch = false;
-    
-    for(uint j=0; j<nodes[(*p_paired_nodes)[i]].lit.terms.size(); j++) {
-      if(lf.branches[n_lf_paired].lit.terms[j].isConstant() && nodes[(*p_paired_nodes)[i]].lit.terms[j].isConstant() &&
-         lf.branches[n_lf_paired].lit.terms[j] != nodes[(*p_paired_nodes)[i]].lit.terms[j]) {fConstantMismatch = true; break;}
-    }
+    const vector<int> *p_pivot_nodes, *p_paired_nodes;
 
-    if(fConstantMismatch) continue;
-    
-    V(5) cerr << TS() << "Inconsistent: " << nodes[(*p_paired_nodes)[i]].toString() << ", " << nodes[n_obs].toString() << endl;
-          
-    unifier_t theta;
+    if(!getNode(&p_pivot_nodes, lf.branches[0].lit.predicate, lf.branches[0].lit.terms.size())) continue;
+    if(!getNode(&p_paired_nodes, lf.branches[1].lit.predicate, lf.branches[1].lit.terms.size())) continue;
 
-    for(uint j=0; j<nodes[n_obs].lit.terms.size(); j++) {
-      if(lf.branches[n_lf_obs].lit.terms[j].isConstant() && !nodes[n_obs].lit.terms[j].isConstant())
-        theta.add(lf.branches[n_lf_obs].lit.terms[j], nodes[n_obs].lit.terms[j]);
-    }
+    repeat(i_pivot, p_pivot_nodes->size()) {
+      int n_obs = (*p_pivot_nodes)[i_pivot];
+      int n_lf_obs = 0, n_lf_paired = 1;
+      
+      /* CONSTANT MISMATCH */
+      bool fConstantMismatch = false;
+      
+      for(uint i=0; i<nodes[n_obs].lit.terms.size(); i++) {
+        if(lf.branches[n_lf_obs].lit.terms[i].isConstant() && nodes[n_obs].lit.terms[i].isConstant() &&
+           lf.branches[n_lf_obs].lit.terms[i] != nodes[n_obs].lit.terms[i]) {fConstantMismatch = true; break;}
+      }
 
-    for(uint j=0; j<nodes[(*p_paired_nodes)[i]].lit.terms.size(); j++) {
-      if(lf.branches[n_lf_paired].lit.terms[j].isConstant() && !nodes[(*p_paired_nodes)[i]].lit.terms[j].isConstant())
-        theta.add(lf.branches[n_lf_paired].lit.terms[j], nodes[(*p_paired_nodes)[i]].lit.terms[j]);
-    }
+      if(fConstantMismatch) continue;
+
+      repeat(i_paired, p_paired_nodes->size()) {
+        int n_paired = (*p_paired_nodes)[i_paired];
+        
+        V(5) cerr << TS() << "Possibly inconsistent: " << nodes[n_paired].toString() << ", " << nodes[n_obs].toString() << endl;
     
-    repeat(t1, lf.branches[0].lit.terms.size()) {
-      repeat(t2, lf.branches[1].lit.terms.size()) {
-        if(lf.branches[0].lit.terms[t1] == lf.branches[1].lit.terms[t2]) {
-          theta.add(nodes[(*p_paired_nodes)[i]].lit.terms[t1], nodes[n_obs].lit.terms[t2]);
+        /* CONSTANT MISMATCH */
+        fConstantMismatch = false;
+    
+        for(uint j=0; j<nodes[n_paired].lit.terms.size(); j++) {
+          if(lf.branches[n_lf_paired].lit.terms[j].isConstant() && nodes[n_paired].lit.terms[j].isConstant() &&
+             lf.branches[n_lf_paired].lit.terms[j] != nodes[n_paired].lit.terms[j]) {fConstantMismatch = true; break;}
         }
-      } }
 
-    p_x_axiom[n_obs][axiom_str] = 1;
-    p_x_axiom[(*p_paired_nodes)[i]][axiom_str] = 1;
-    mutual_exclusive_nodes.push_back(make_pair(make_pair((*p_paired_nodes)[i], n_obs), theta));
+        if(fConstantMismatch) continue;
+              
+        unifier_t theta;
+
+        for(uint j=0; j<nodes[n_obs].lit.terms.size(); j++) {
+          if(lf.branches[n_lf_obs].lit.terms[j].isConstant() && !nodes[n_obs].lit.terms[j].isConstant())
+            theta.add(lf.branches[n_lf_obs].lit.terms[j], nodes[n_obs].lit.terms[j]);
+        }
+
+        for(uint j=0; j<nodes[n_paired].lit.terms.size(); j++) {
+          if(lf.branches[n_lf_paired].lit.terms[j].isConstant() && !nodes[n_paired].lit.terms[j].isConstant())
+            theta.add(lf.branches[n_lf_paired].lit.terms[j], nodes[n_paired].lit.terms[j]);
+        }
+    
+        repeat(t1, lf.branches[0].lit.terms.size()) {
+          repeat(t2, lf.branches[1].lit.terms.size()) {
+            cerr << lf.branches[0].lit.terms[t1] << "," << lf.branches[1].lit.terms[t2] << endl;
+            if(lf.branches[0].lit.terms[t1] == lf.branches[1].lit.terms[t2]) {
+              theta.add(nodes[n_obs].lit.terms[t1], nodes[n_paired].lit.terms[t2]);
+            }
+          } }
+
+        V(5) cerr << TS() << "Inconsistent: " << nodes[n_paired].toString() << ", " << nodes[n_obs].toString() << " with " << theta.toString() << endl;
+        
+        p_x_axiom[n_obs][axiom_str] = 1;
+        p_x_axiom[n_paired][axiom_str] = 1;
+        mutual_exclusive_nodes.push_back(make_pair(make_pair(n_paired, n_obs), theta));
+      }
+    }
   }
   
   // repeat(i, p_nodes->size()) {          
@@ -1353,7 +1357,7 @@ bool function::convertToFeatureVector(linear_programming_problem_t *p_out_lp, lp
 
   /* DISJOINT AXIOMS. */
   foreachc(axiom_disjoint_set_t, i, pg.axiom_disjoint_set) {
-    lp_constraint_t con_d(::toString("axdisj_%d", i), LessEqual, 1);
+    lp_constraint_t con_d("axdisj", LessEqual, 1);
 
     if(i->second.size() <= 1) continue;
     

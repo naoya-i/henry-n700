@@ -1,6 +1,6 @@
 #pragma once
 
-//#define USE_OMP
+#define USE_OMP
 #define USE_GUROBI
 //#define USE_LOCALSOLVER
 //#define USE_LPSOLVE
@@ -39,8 +39,8 @@
 
 #include <pcrecpp.h>
 
-//#include <python2.7/Python.h>
-#include <Python.h>
+#include <python2.7/Python.h>
+//#include <Python.h>
 
 #define mymax(x, y) (x > y ? x : y)
 #define mymin(x, y) (x < y ? x : y)

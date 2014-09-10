@@ -14,6 +14,7 @@ def main():
 	parser.add_argument( "--graph", help="ID of the graph that you want to visualize.", nargs="+", default=[None] )
 	parser.add_argument( "--potential", help="Show all the path including potentials.", action="store_true", default=False )
 	parser.add_argument( "--clustered", help="Replace name of variables with cluster id.", action="store_true", default=False )
+	parser.add_argument( "--clean", help="Pretty print.", action="store_true", default=False )
 	parser.add_argument( "--path", help="Path to henry output.", default="/" )
 	parser.add_argument( "--format", help="Format (dot|html).", default="dot" )
 	parser.add_argument( "--input", help="The input file to be evaluated.", nargs="+", default=["-"] )
@@ -259,7 +260,7 @@ def _outputDot(t, pg, pa):
 			lstr = lstr[0].split(":")[0]
 		else:
 			lstr = "%s\\n(%s)\\n%s" % (lstr[0], ", ".join([_convCluster(x) for x in lstr[1:-1]]), prp)
-			lstr += "/%s" % lit.attrib["id"]
+			if not pa.clean: lstr += "/%s" % lit.attrib["id"]
 		
 		nstr = "n%s [shape=\"none\", color=\"%s\", style=\"%s\", penwidth=\"1\", label=\"%s\", fontcolor=\"%s\", width=\"0.1\", height=\"0.01\", nodesep=\"0.75\"]" % (
 			dig_id*1000+int(lit.attrib["id"]), def_bg_color,

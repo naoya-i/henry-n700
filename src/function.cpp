@@ -843,7 +843,6 @@ void proof_graph_t::detectInconsistentNodes(const knowledge_base_t &kb) {
     
         repeat(t1, lf.branches[0].lit.terms.size()) {
           repeat(t2, lf.branches[1].lit.terms.size()) {
-            cerr << lf.branches[0].lit.terms[t1] << "," << lf.branches[1].lit.terms[t2] << endl;
             if(lf.branches[0].lit.terms[t1] == lf.branches[1].lit.terms[t2]) {
               theta.add(nodes[n_obs].lit.terms[t1], nodes[n_paired].lit.terms[t2]);
             }

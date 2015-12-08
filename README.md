@@ -1,6 +1,1 @@
-henry
-=====
-
-A cost-based abductive reasoning engine.
-
-Please visit our wiki (https://github.com/naoya-i/henry-n700/wiki) for more information.
+*This repository is no longer maintined. You can find the latest version here: https://github.com/kazeto/phillip*
